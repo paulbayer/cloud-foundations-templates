@@ -14,7 +14,7 @@ import logging
 
 init()
 
-__version__ = '2024.09.23'
+__version__ = '2025.02.14'
 
 def parse_args(args):
 	"""
@@ -45,6 +45,8 @@ def check_accounts_for_instances(faws_acct: aws_acct_access, fRegionList: list =
 	Instances = dict()
 	if fRegionList is None:
 		fRegionList = [faws_acct.Region]
+	# TODO: Need to update this to use multi-threading
+	logging.info(f"Checking account {faws_acct.acct_number}")
 	for account in ChildAccounts:
 		acct_instances = []
 		logging.info(f"Connecting to account {account['AccountId']}")
