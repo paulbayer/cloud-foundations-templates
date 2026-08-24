@@ -1,0 +1,518 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Tagging Policies - Organization-wide tag compliance enforcement with parameterized deployment'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Required Tags Policy"
+        Parameters:
+          - tDeployRequiredTags
+          - tRequiredTagsDescription
+          - uRequiredTagsTargets
+      - Label:
+          default: "Optional Tags Policy"
+        Parameters:
+          - tDeployOptionalTags
+          - tOptionalTagsDescription
+          - uOptionalTagsTargets
+      - Label:
+          default: "Data Classification Policy"
+        Parameters:
+          - tDeployDataClassification
+          - tDataClassificationDescription
+          - uDataClassificationTargets
+    ParameterLabels:
+      tDeployRequiredTags:
+        default: "Deploy Required Tags Policy"
+      tRequiredTagsDescription:
+        default: "Required Tags Policy Description"
+      uRequiredTagsTargets:
+        default: "Required Tags Policy Targets"
+      tDeployOptionalTags:
+        default: "Deploy Optional Tags Policy"
+      tOptionalTagsDescription:
+        default: "Optional Tags Policy Description"
+      uOptionalTagsTargets:
+        default: "Optional Tags Policy Targets"
+      tDeployDataClassification:
+        default: "Deploy Data Classification Policy"
+      tDataClassificationDescription:
+        default: "Data Classification Policy Description"
+      uDataClassificationTargets:
+        default: "Data Classification Policy Targets"
+
+Parameters:
+  # Required Tags Policy Parameters
+  tDeployRequiredTags:
+    Type: String
+    Default: true
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Required Tags policy - Enforces Environment, CostCenter, and Project tags"
+  
+  tRequiredTagsDescription:
+    Type: String
+    Default: "Required tags for all resources"
+    Description: "Description for Required Tags policy"
+  
+  uRequiredTagsTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for Required Tags policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+  # Optional Tags Policy Parameters
+  tDeployOptionalTags:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Optional Tags policy - Enforces Owner and Application tags"
+  
+  tOptionalTagsDescription:
+    Type: String
+    Default: "Optional tags with validation rules (Owner, Application)"
+    Description: "Description for Optional Tags policy"
+  
+  uOptionalTagsTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for Optional Tags policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+  # Data Classification Policy Parameters
+  tDeployDataClassification:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Data Classification policy - Enforces data classification tags on data resources"
+  
+  tDataClassificationDescription:
+    Type: String
+    Default: "Data classification tags for data resources (Public, Internal, Confidential, Restricted)"
+    Description: "Description for Data Classification policy"
+  
+  uDataClassificationTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for Data Classification policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+Conditions:
+  CreateRequiredTags: !Equals [!Ref tDeployRequiredTags, "true"]
+  CreateOptionalTags: !Equals [!Ref tDeployOptionalTags, "true"]
+  CreateDataClassification: !Equals [!Ref tDeployDataClassification, "true"]
+  AnyTaggingPolicyEnabled: !Or
+    - !Condition CreateRequiredTags
+    - !Condition CreateOptionalTags
+    - !Condition CreateDataClassification
+
+Resources:
+  # Lambda function to enable TAG_POLICY type in the organization
+  EnableTaggingPolicyTypeFunction:
+    Type: AWS::Lambda::Function
+    Condition: AnyTaggingPolicyEnabled
+    Properties:
+      FunctionName: TitaniumEnableTaggingPolicyType
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt EnablePolicyTypeRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          
+          def handler(event, context):
+              """
+              Custom resource handler to enable TAG_POLICY type in AWS Organizations.
+              This is required before tagging policies can be created and attached.
+              """
+              try:
+                  organizations = boto3.client('organizations')
+                  request_type = event['RequestType']
+                  
+                  print(f"Request Type: {request_type}")
+                  
+                  if request_type in ['Create', 'Update']:
+                      # Get the organization root ID
+                      roots_response = organizations.list_roots()
+                      root_id = roots_response['Roots'][0]['Id']
+                      
+                      print(f"Organization Root ID: {root_id}")
+                      
+                      # Enable TAG_POLICY type
+                      try:
+                          organizations.enable_policy_type(
+                              RootId=root_id,
+                              PolicyType='TAG_POLICY'
+                          )
+                          print("Successfully enabled TAG_POLICY type")
+                      except organizations.exceptions.PolicyTypeAlreadyEnabledException:
+                          print("TAG_POLICY type already enabled")
+                          pass  # Already enabled, this is fine
+                      except Exception as e:
+                          print(f"Error enabling policy type: {str(e)}")
+                          raise
+                  
+                  # For Delete, we don't disable the policy type as other policies might be using it
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              
+              except Exception as e:
+                  print(f"Error in handler: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'error': str(e)})
+      Timeout: 60
+      MemorySize: 128
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # Custom resource to trigger policy type enablement
+  EnableTaggingPolicyType:
+    Type: Custom::EnableTaggingPolicyType
+    Condition: AnyTaggingPolicyEnabled
+    Properties:
+      ServiceToken: !GetAtt EnableTaggingPolicyTypeFunction.Arn
+
+  # IAM role for the EnableTaggingPolicyType Lambda function
+  EnablePolicyTypeRole:
+    Type: AWS::IAM::Role
+    Condition: AnyTaggingPolicyEnabled
+    Properties:
+      RoleName: TitaniumEnableTaggingPolicyTypeRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EnableTaggingPolicyType
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:EnablePolicyType
+                  - organizations:ListRoots
+                  - organizations:DescribeOrganization
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # Required Tags Policy (Environment, CostCenter, Project)
+  RequiredTagsPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateRequiredTags
+    DependsOn: EnableTaggingPolicyType
+    Properties:
+      Name: RequiredTags
+      Description: !Ref tRequiredTagsDescription
+      Type: TAG_POLICY
+      Content: |
+        {
+          "tags": {
+            "Environment": {
+              "tag_key": {
+                "@@assign": "Environment",
+                "@@operators_allowed_for_child_policies": ["@@none"]
+              },
+              "tag_value": {
+                "@@assign": ["Production", "Development", "Staging", "Test"],
+                "@@operators_allowed_for_child_policies": ["@@append"]
+              },
+              "enforced_for": {
+                "@@assign": [
+                  "ec2:instance",
+                  "ec2:volume",
+                  "s3:bucket",
+                  "rds:db",
+                  "lambda:function",
+                  "dynamodb:table"
+                ]
+              }
+            },
+            "CostCenter": {
+              "tag_key": {
+                "@@assign": "CostCenter",
+                "@@operators_allowed_for_child_policies": ["@@none"]
+              },
+              "enforced_for": {
+                "@@assign": ["*"]
+              }
+            },
+            "Project": {
+              "tag_key": {
+                "@@assign": "Project",
+                "@@operators_allowed_for_child_policies": ["@@none"]
+              },
+              "enforced_for": {
+                "@@assign": ["*"]
+              }
+            }
+          }
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Optional Tags Policy (Owner, Application)
+  OptionalTagsPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateOptionalTags
+    DependsOn: EnableTaggingPolicyType
+    Properties:
+      Name: OptionalTags
+      Description: !Ref tOptionalTagsDescription
+      Type: TAG_POLICY
+      Content: |
+        {
+          "tags": {
+            "Owner": {
+              "tag_key": {
+                "@@assign": "Owner"
+              },
+              "enforced_for": {
+                "@@assign": ["ec2:*", "s3:*", "lambda:*"]
+              }
+            },
+            "Application": {
+              "tag_key": {
+                "@@assign": "Application"
+              },
+              "enforced_for": {
+                "@@assign": ["ec2:*", "s3:*", "lambda:*", "dynamodb:*"]
+              }
+            }
+          }
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Data Classification Policy
+  DataClassificationPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateDataClassification
+    DependsOn: EnableTaggingPolicyType
+    Properties:
+      Name: DataClassification
+      Description: !Ref tDataClassificationDescription
+      Type: TAG_POLICY
+      Content: |
+        {
+          "tags": {
+            "DataClassification": {
+              "tag_key": {
+                "@@assign": "DataClassification",
+                "@@operators_allowed_for_child_policies": ["@@none"]
+              },
+              "tag_value": {
+                "@@assign": ["Public", "Internal", "Confidential", "Restricted"],
+                "@@operators_allowed_for_child_policies": ["@@none"]
+              },
+              "enforced_for": {
+                "@@assign": [
+                  "s3:bucket",
+                  "rds:db",
+                  "dynamodb:table",
+                  "secretsmanager:secret"
+                ]
+              }
+            }
+          }
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Lambda function to attach tagging policies to OUs
+  PolicyAttachmentFunction:
+    Type: AWS::Lambda::Function
+    Condition: AnyTaggingPolicyEnabled
+    Properties:
+      FunctionName: TitaniumTaggingPolicyAttachment
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt PolicyAttachmentRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          
+          def handler(event, context):
+              """
+              Custom resource handler to attach tagging policies to organizational units.
+              Handles Create, Update, and Delete operations idempotently.
+              """
+              try:
+                  organizations = boto3.client('organizations')
+                  request_type = event['RequestType']
+                  properties = event['ResourceProperties']
+                  
+                  print(f"Request Type: {request_type}")
+                  print(f"Properties: {json.dumps(properties, default=str)}")
+                  
+                  # Collect all policies to attach
+                  policies_to_attach = []
+                  
+                  # Required Tags Policy
+                  if properties.get('AttachRequiredTags') == 'true':
+                      policy_id = properties.get('RequiredTagsPolicyId')
+                      targets = properties.get('RequiredTagsTargets', [])
+                      if policy_id and targets:
+                          policies_to_attach.append({
+                              'PolicyId': policy_id,
+                              'Targets': [t.strip() for t in targets if t.strip()],
+                              'Name': 'RequiredTags'
+                          })
+                  
+                  # Optional Tags Policy
+                  if properties.get('AttachOptionalTags') == 'true':
+                      policy_id = properties.get('OptionalTagsPolicyId')
+                      targets = properties.get('OptionalTagsTargets', [])
+                      if policy_id and targets:
+                          policies_to_attach.append({
+                              'PolicyId': policy_id,
+                              'Targets': [t.strip() for t in targets if t.strip()],
+                              'Name': 'OptionalTags'
+                          })
+                  
+                  # Data Classification Policy
+                  if properties.get('AttachDataClassification') == 'true':
+                      policy_id = properties.get('DataClassificationPolicyId')
+                      targets = properties.get('DataClassificationTargets', [])
+                      if policy_id and targets:
+                          policies_to_attach.append({
+                              'PolicyId': policy_id,
+                              'Targets': [t.strip() for t in targets if t.strip()],
+                              'Name': 'DataClassification'
+                          })
+                  
+                  if request_type in ['Create', 'Update']:
+                      # Attach policies to targets
+                      for policy in policies_to_attach:
+                          for target in policy['Targets']:
+                              if target:  # Skip empty targets
+                                  try:
+                                      organizations.attach_policy(
+                                          PolicyId=policy['PolicyId'],
+                                          TargetId=target
+                                      )
+                                      print(f"Successfully attached {policy['Name']} policy {policy['PolicyId']} to {target}")
+                                  except organizations.exceptions.DuplicatePolicyAttachmentException:
+                                      print(f"Policy {policy['PolicyId']} already attached to {target}")
+                                      pass  # Policy already attached, this is fine
+                                  except Exception as e:
+                                      print(f"Error attaching policy {policy['PolicyId']} to {target}: {str(e)}")
+                                      # Continue with other attachments even if one fails
+                  
+                  elif request_type == 'Delete':
+                      # Detach policies from targets
+                      for policy in policies_to_attach:
+                          for target in policy['Targets']:
+                              if target:  # Skip empty targets
+                                  try:
+                                      organizations.detach_policy(
+                                          PolicyId=policy['PolicyId'],
+                                          TargetId=target
+                                      )
+                                      print(f"Successfully detached {policy['Name']} policy {policy['PolicyId']} from {target}")
+                                  except organizations.exceptions.PolicyNotAttachedException:
+                                      print(f"Policy {policy['PolicyId']} not attached to {target}")
+                                      pass  # Policy not attached, this is fine
+                                  except Exception as e:
+                                      print(f"Error detaching policy {policy['PolicyId']} from {target}: {str(e)}")
+                                      # Continue with other detachments even if one fails
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              
+              except Exception as e:
+                  print(f"Error in handler: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'error': str(e)})
+      Timeout: 300
+      MemorySize: 128
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # IAM role for the PolicyAttachment Lambda function
+  PolicyAttachmentRole:
+    Type: AWS::IAM::Role
+    Condition: AnyTaggingPolicyEnabled
+    Properties:
+      RoleName: TitaniumTaggingPolicyAttachmentRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TaggingPolicyAttachment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:AttachPolicy
+                  - organizations:DetachPolicy
+                  - organizations:ListPolicies
+                  - organizations:ListTargetsForPolicy
+                  - organizations:DescribePolicy
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # Custom Resource for Attaching Tagging Policies to OUs
+  PolicyAttachments:
+    Type: Custom::TaggingPolicyAttachments
+    Condition: AnyTaggingPolicyEnabled
+    Properties:
+      ServiceToken: !GetAtt PolicyAttachmentFunction.Arn
+      # Required Tags Policy
+      AttachRequiredTags: !Ref tDeployRequiredTags
+      RequiredTagsPolicyId: !If [CreateRequiredTags, !Ref RequiredTagsPolicy, ""]
+      RequiredTagsTargets: !Ref uRequiredTagsTargets
+      # Optional Tags Policy
+      AttachOptionalTags: !Ref tDeployOptionalTags
+      OptionalTagsPolicyId: !If [CreateOptionalTags, !Ref OptionalTagsPolicy, ""]
+      OptionalTagsTargets: !Ref uOptionalTagsTargets
+      # Data Classification Policy
+      AttachDataClassification: !Ref tDeployDataClassification
+      DataClassificationPolicyId: !If [CreateDataClassification, !Ref DataClassificationPolicy, ""]
+      DataClassificationTargets: !Ref uDataClassificationTargets
+
+Outputs:
+  RequiredTagsPolicyId:
+    Description: ID of the Required Tags policy
+    Value: !If [CreateRequiredTags, !Ref RequiredTagsPolicy, "Not Deployed"]
+    Export:
+      Name: !Sub "${AWS::StackName}-RequiredTagsPolicyId"
+  
+  OptionalTagsPolicyId:
+    Description: ID of the Optional Tags policy
+    Value: !If [CreateOptionalTags, !Ref OptionalTagsPolicy, "Not Deployed"]
+    Export:
+      Name: !Sub "${AWS::StackName}-OptionalTagsPolicyId"
+  
+  DataClassificationPolicyId:
+    Description: ID of the Data Classification policy
+    Value: !If [CreateDataClassification, !Ref DataClassificationPolicy, "Not Deployed"]
+    Export:
+      Name: !Sub "${AWS::StackName}-DataClassificationPolicyId"
+  
+  TaggingPolicyTypeEnabled:
+    Description: Indicates whether TAG_POLICY type is enabled in the organization
+    Value: !If [AnyTaggingPolicyEnabled, "true", "false"]

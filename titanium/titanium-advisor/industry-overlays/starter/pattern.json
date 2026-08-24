@@ -1,0 +1,231 @@
+{
+  "description": "Starter industry pattern - basic AWS Landing Zone with only generator-supported features",
+  "template_variables": {
+    "home_region": "us-east-1",
+    "enabled_regions": ["us-east-1"],
+    "management_account_access_role": "AWSControlTowerExecution",
+    
+    "control_tower_enable": true,
+    "control_tower_version": "4.0",
+    "control_tower_org_trail": true,
+    "logging_bucket_retention": 365,
+    "access_logging_retention": 3650,
+    "organization_trail": true,
+    "identity_center_access": false,
+    "deny_region": true,
+    
+    "organizational_units": [
+      {"name": "Security"},
+      {"name": "Infrastructure"}, 
+      {"name": "Workloads"},
+      {"name": "Sandbox"},
+      {"name": "Exceptions"}
+    ],
+    
+    "service_control_policies": [
+      {
+        "name": "PreventLeaveOrganization",
+        "description": "Prevents accounts from leaving the organization",
+        "policy": "service-control-policies/prevent-leave-org.json",
+        "type": "customerManaged",
+        "deployment_targets": ["Root"]
+      },
+      {
+        "name": "PreventPublicS3",
+        "description": "Prevents creation of public S3 buckets",
+        "policy": "service-control-policies/prevent-public-s3.json",
+        "type": "customerManaged",
+        "deployment_targets": ["Root"]
+      }
+    ],
+    
+    "tagging_policies": [
+      {
+        "name": "TagStandardization",
+        "description": "Standardizes tag key casing and restricts allowed tag values across the organization",
+        "policy": "tagging-policies/required-tags.json",
+        "deployment_targets": ["Root"]
+      }
+    ],
+    
+    "backup_policies": [
+      {
+        "name": "DailyBackups",
+        "enable": false,
+        "description": "Daily backups with 30-day retention",
+        "policy": "backup-policies/daily-backups.json",
+        "deployment_targets": ["Workloads"]
+      }
+    ],
+    
+    "management_account_email": "management-account@{{domain}}",
+    "log_archive_account_email": "log-archive@{{domain}}",
+    "audit_account_email": "audit@{{domain}}",
+    
+    "infrastructure_accounts": [
+      {
+        "name": "SharedServices",
+        "description": "The SharedServices account",
+        "email": "shared-services@{{domain}}",
+        "organizational_unit": "Infrastructure"
+      },
+      {
+        "name": "Network",
+        "description": "The Network account",
+        "email": "network@{{domain}}",
+        "organizational_unit": "Infrastructure"
+      },
+      {
+        "name": "Monitoring",
+        "description": "The Monitoring account for centralized observability",
+        "email": "monitoring@{{domain}}",
+        "organizational_unit": "Infrastructure"
+      }
+    ],
+    
+    "identity_center_external_provider": {
+      "enabled": false,
+      "provider": "Entra",
+      "saml_integration": false,
+      "scim_integration": false
+    },
+    
+    "network_architecture_type": "TGW",
+    "default_vpc_delete": true,
+    "centralized_networking": true,
+    "network_account": "Network",
+    
+    "network_workload_vpcs": {
+      "enabled": true,
+      "availability_zones": 2,
+      "subnets_per_az": 2,
+      "deployment_targets": {
+        "organizational_units": ["Workloads"]
+      }
+    },
+    
+    "network_transit_gateway": {
+      "enabled": true,
+      "route_table_structure": "segregated",
+      "route_tables": ["Core", "Segregated", "Shared", "Standalone"]
+    },
+    
+    "network_inspection_vpc": {
+      "enabled": false,
+      "availability_zones": 2,
+      "use_ipam": true,
+      "netmask_length": 24
+    },
+    
+    "network_firewall": {
+      "enabled": false,
+      "name": "aws-network-firewall-001",
+      "enable_logging": true
+    },
+    
+    "network_hybrid_connectivity": {
+      "enabled": false,
+      "type": "DirectConnect"
+    },
+    
+    "route53_resolver_enabled": false,
+    "route53_resolver_outbound_domains": [],
+    "route53_resolver_on_prem_dns_servers": [],
+    "route53_resolver_allowed_source_cidrs": [],
+    
+    "ipam_enabled": false,
+    "ipam_operating_regions": ["us-east-1"],
+    "ipam_pools": [
+      {
+        "name": "global-pool",
+        "description": "Global IPAM pool for starter",
+        "provisionedCidrs": ["10.100.0.0/16"]
+      },
+      {
+        "name": "regional-pool-us-east-1",
+        "description": "Regional pool for us-east-1",
+        "locale": "us-east-1",
+        "sourceIpamPool": "global-pool",
+        "provisionedCidrs": ["10.100.0.0/17"],
+        "shareTargets": {
+          "organizationalUnits": ["Infrastructure", "Workloads"]
+        }
+      }
+    ],
+    
+    "vpc_flow_logs_bucket": {
+      "enabled": true,
+      "bucket_name": "vpc-flow-logs-{{organization_name}}-{{home_region}}",
+      "retention_days": 90
+    },
+    
+    "vpc_flow_traffic_type": "ALL",
+    "vpc_flow_regions": ["us-east-1"],
+    "vpc_flow_aggregation": 600,
+    "vpc_flow_destinations": ["s3"],
+    "vpc_flow_retention": 90,
+    "vpc_flow_default_format": false,
+    
+    "budgets": [
+      {
+        "accounts": ["Management"],
+        "name": "starter-budget",
+        "time_unit": "MONTHLY",
+        "type": "COST",
+        "amount": 1000,
+        "include_upfront": true,
+        "include_tax": true,
+        "include_support": true,
+        "include_subscription": true,
+        "include_recurring": true,
+        "include_other_subscription": true,
+        "include_discount": true,
+        "include_credit": false,
+        "include_refund": false,
+        "use_blended": false,
+        "use_amortized": false,
+        "unit": "USD",
+        "notifications": [
+          {"type": "ACTUAL"}
+        ]
+      }
+    ],
+    
+    "compute_optimizer_enable": true,
+    "cost_optimization_hub_enable": true,
+    
+    "iam_min_password_length": 14,
+    "iam_hard_expiry": false,
+    "detective_enable": false,
+    "macie_enable": false,
+    "access_analyzer_unused": false,
+    
+    "security_hub_standards": [
+      {
+        "name": "AWS Foundational Security Best Practices v1.0.0",
+        "enable": true
+      },
+      {
+        "name": "CIS AWS Foundations Benchmark v1.2.0",
+        "enable": false
+      },
+      {
+        "name": "CIS AWS Foundations Benchmark v1.4.0",
+        "enable": false
+      },
+      {
+        "name": "NIST Special Publication 800-53 Revision 5",
+        "enable": false
+      },
+      {
+        "name": "PCI DSS v3.2.1",
+        "enable": false
+      }
+    ],
+    
+    "config_recorder_enable": true,
+    "config_delivery_channel_enable": true,
+    "config_global_resource_types": true,
+    "config_delivery_frequency": "24hours"
+  }
+}

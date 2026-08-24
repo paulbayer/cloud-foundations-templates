@@ -1,0 +1,55 @@
+organizationName: TestOrg
+domain: example.com
+homeRegion: us-east-1
+enabledRegions:
+  - us-east-1
+  - us-west-2
+
+organization:
+  organizationalUnits:
+    - name: Workloads
+      parent: Root
+    - name: Security
+      parent: Root
+  
+  taggingPolicies:
+    - name: RequiredTags
+      description: Required tags for all resources
+      policy: |
+        {
+          "tags": {
+            "Environment": {
+              "tag_key": {
+                "@@assign": "Environment"
+              },
+              "tag_value": {
+                "@@assign": ["Production", "Development"]
+              },
+              "enforced_for": {
+                "@@assign": ["*"]
+              }
+            }
+          }
+        }
+      deploymentTargets:
+        organizationalUnits:
+          - Root
+    
+    - name: CostCenterTags
+      description: Cost center tagging policy
+      policy: |
+        {
+          "tags": {
+            "CostCenter": {
+              "tag_key": {
+                "@@assign": "CostCenter"
+              },
+              "enforced_for": {
+                "@@assign": ["*"]
+              }
+            }
+          }
+        }
+      deploymentTargets:
+        organizationalUnits:
+          - Workloads

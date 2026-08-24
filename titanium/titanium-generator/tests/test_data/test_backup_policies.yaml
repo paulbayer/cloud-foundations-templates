@@ -1,0 +1,70 @@
+organizationName: TestOrg
+domain: example.com
+homeRegion: us-east-1
+enabledRegions:
+  - us-east-1
+  - us-west-2
+
+organization:
+  organizationalUnits:
+    - name: Workloads
+      parent: Root
+    - name: Security
+      parent: Root
+  
+  backupPolicies:
+    - name: DailyBackup
+      description: Daily backups with 30-day retention
+      policy: |
+        {
+          "plans": {
+            "DailyBackupPlan": {
+              "regions": {
+                "@@assign": ["us-east-1"]
+              },
+              "rules": {
+                "DailyBackupRule": {
+                  "schedule_expression": {
+                    "@@assign": "cron(0 5 ? * * *)"
+                  },
+                  "lifecycle": {
+                    "delete_after_days": {
+                      "@@assign": "30"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      deploymentTargets:
+        organizationalUnits:
+          - Workloads
+    
+    - name: WeeklyBackup
+      description: Weekly backups with 90-day retention
+      policy: |
+        {
+          "plans": {
+            "WeeklyBackupPlan": {
+              "regions": {
+                "@@assign": ["us-east-1"]
+              },
+              "rules": {
+                "WeeklyBackupRule": {
+                  "schedule_expression": {
+                    "@@assign": "cron(0 5 ? * SUN *)"
+                  },
+                  "lifecycle": {
+                    "delete_after_days": {
+                      "@@assign": "90"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      deploymentTargets:
+        organizationalUnits:
+          - Security

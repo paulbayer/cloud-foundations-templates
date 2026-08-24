@@ -1,0 +1,492 @@
+{
+  "description": "Enterprise base pattern with multi-region support and advanced security features",
+  "template_variables": {
+    "home_region": "us-east-1",
+    "enabled_regions": ["us-east-1", "us-west-2"],
+    "management_account_access_role": "AWSControlTowerExecution",
+    
+    "control_tower_enable": true,
+    "control_tower_version": "4.0",
+    "control_tower_org_trail": true,
+    "logging_bucket_retention": 1095,
+    "access_logging_retention": 3650,
+    "organization_trail": true,
+    "identity_center_access": true,
+    "deny_region": false,
+    
+    "organizational_units": [
+      {"name": "Security"},
+      {"name": "Infrastructure"},
+      {"name": "Workloads"},
+      {"name": "Sandbox"},
+      {"name": "Exceptions"},
+      {"name": "Development"},
+      {"name": "Production"}
+    ],
+    
+    "service_control_policies": [
+      {
+        "name": "PreventLeaveOrganization",
+        "description": "Prevents accounts from leaving the organization",
+        "policy": "service-control-policies/prevent-leave-org.json",
+        "type": "customerManaged",
+        "deployment_targets": ["Root"]
+      },
+      {
+        "name": "PreventPublicS3",
+        "description": "Prevents creation of public S3 buckets",
+        "policy": "service-control-policies/prevent-public-s3.json",
+        "type": "customerManaged",
+        "deployment_targets": ["Root"]
+      },
+      {
+        "name": "RequireEncryption",
+        "description": "Requires encryption for all data storage services",
+        "policy": "service-control-policies/require-encryption.json",
+        "type": "customerManaged",
+        "deployment_targets": ["Workloads", "Development", "Production"]
+      }
+    ],
+    
+    "tagging_policies": [
+      {
+        "name": "RequiredTags",
+        "description": "Enforces required tags on resources",
+        "policy": "tagging-policies/required-tags.json",
+        "deployment_targets": ["Root"]
+      },
+      {
+        "name": "CostCenterTags",
+        "description": "Enforces cost center and business unit tags",
+        "policy": "tagging-policies/cost-center-tags.json",
+        "deployment_targets": ["Root"]
+      }
+    ],
+    
+    "backup_policies": [
+      {
+        "name": "DailyBackups",
+        "enable": true,
+        "description": "Daily backups with 3-year retention for enterprise compliance",
+        "policy": "backup-policies/daily-backups-enterprise.json",
+        "deployment_targets": ["Workloads", "Production"]
+      }
+    ],
+    
+    "iam_allow_users_change_password": true,
+    "iam_hard_expiry": false,
+    "iam_require_uppercase": true,
+    "iam_require_lowercase": true,
+    "iam_require_symbols": true,
+    "iam_require_numbers": true,
+    "iam_min_password_length": 14,
+    "iam_password_reuse_prevention": 24,
+    "iam_max_password_age": 90,
+    "access_analyzer_external": true,
+    "access_analyzer_unused": true,
+    "identity_center_admin_account": "SharedServices",
+    "identity_center_mfa_required": true,
+    "identity_center_abac": true,
+    
+    "identity_center_external_provider": {
+      "enabled": true,
+      "provider": "Entra",
+      "saml_integration": true,
+      "scim_integration": true
+    },
+    
+    "identity_center_common_roles": [
+      {
+        "name": "NetworkAdmin",
+        "description": "Network administration role",
+        "policies": ["AmazonVPCFullAccess", "AmazonRoute53FullAccess"],
+        "session_duration": 3600
+      },
+      {
+        "name": "SecurityAdmin",
+        "description": "Security administration role",
+        "policies": ["SecurityAudit", "AmazonGuardDutyFullAccess", "AmazonMacieFullAccess"],
+        "session_duration": 3600
+      },
+      {
+        "name": "DeveloperReadOnly",
+        "description": "Read-only access for developers",
+        "policies": ["ReadOnlyAccess"],
+        "session_duration": 7200
+      },
+      {
+        "name": "PowerUser",
+        "description": "Power user access for senior developers",
+        "policies": ["PowerUserAccess"],
+        "session_duration": 7200
+      }
+    ],
+    
+    "logging_account": "LogArchive",
+    "cloudtrail_management_enable": false,
+    "cloudtrail_management_org_trail": false,
+    "cloudtrail_management_multiregion": true,
+    "cloudtrail_management_global_events": true,
+    "cloudtrail_management_events": true,
+    "cloudtrail_management_cloudwatch": true,
+    "cloudtrail_management_error_insight": true,
+    "cloudtrail_management_call_insight": true,
+    
+    "cloudtrail_data_events": [
+      {
+        "name": "S3DataEvents",
+        "regions": ["us-east-1", "us-west-2"],
+        "deployment_targets": ["Security", "Infrastructure", "Production"],
+        "settings": {
+          "multiregion": true,
+          "global_events": true,
+          "management_events": false,
+          "s3": [
+            {
+              "resources": ["arn:aws:s3:::*"],
+              "selectors": [
+                {
+                  "read_only": false,
+                  "include_management": false
+                }
+              ]
+            }
+          ],
+          "cloudwatch": true,
+          "error_insight": true,
+          "call_insight": true
+        }
+      }
+    ],
+    
+    "session_manager_cloudwatch": true,
+    "session_manager_s3": true,
+    "session_manager_lifecycle_enabled": true,
+    "session_manager_incomplete_upload": 7,
+    "session_manager_expiration": 1095,
+    "session_manager_noncurrent_expiration": 1095,
+    "session_manager_iam_roles": ["EC2-Default-SSM-AD-Role"],
+    "cloudwatch_default_retention": 26,
+    "central_log_account_name": "Log Archive",
+    
+    "vpc_flow_traffic_type": "ALL",
+    "vpc_flow_regions": ["us-east-1", "us-west-2"],
+    "vpc_flow_aggregation": 600,
+    "vpc_flow_destinations": ["cloud-watch-logs", "s3"],
+    "vpc_flow_retention": 365,
+    "vpc_flow_default_format": false,
+    
+    "sns_deployment_targets": ["Root"],
+    "sns_topics": [
+      {
+        "name": "Security",
+        "emails": ["security-notifications@{{domain}}"]
+      },
+      {
+        "name": "Operations",
+        "emails": ["ops-notifications@{{domain}}"]
+      },
+      {
+        "name": "Compliance",
+        "emails": ["compliance-notifications@{{domain}}"]
+      }
+    ],
+    
+    "security_admin_account": "Audit",
+    "ebs_encryption_enable": true,
+    "s3_public_access_block": true,
+    "scp_revert_changes": true,
+    "scp_sns_topic": "Security",
+    "macie_enable": true,
+    "guardduty_enable": true,
+    "guardduty_s3_protection": true,
+    "audit_manager_enable": true,
+    "detective_enable": true,
+    "security_hub_enable": true,
+    "security_hub_aggregation": true,
+    
+    "macie_export_config": {
+      "enable": true,
+      "destination": "S3"
+    },
+    
+    "guardduty_export_config": {
+      "enable": true,
+      "destination": "S3",
+      "frequency": "FIFTEEN_MINUTES"
+    },
+    
+    "audit_manager_reports": {
+      "enable": true,
+      "destination": "S3"
+    },
+    
+    "audit_manager_lifecycle": {
+      "enabled": true,
+      "incomplete_upload": 7,
+      "expiration": 1095,
+      "noncurrent_expiration": 1095
+    },
+    
+    "security_hub_standards": [
+      {
+        "name": "AWS Foundational Security Best Practices v1.0.0",
+        "enable": true
+      },
+      {
+        "name": "CIS AWS Foundations Benchmark v1.2.0",
+        "enable": false
+      },
+      {
+        "name": "CIS AWS Foundations Benchmark v1.4.0",
+        "enable": true
+      },
+      {
+        "name": "NIST Special Publication 800-53 Revision 5",
+        "enable": true
+      },
+      {
+        "name": "PCI DSS v3.2.1",
+        "enable": false
+      }
+    ],
+    
+    "config_recorder_enable": true,
+    "config_delivery_channel_enable": true,
+    "config_global_resource_types": true,
+    "config_delivery_frequency": "24hours",
+    "config_rule_sets": [
+      {
+        "deployment_targets": ["Root"],
+        "rules": [
+          {
+            "name": "access-keys-rotated",
+            "identifier": "ACCESS_KEYS_ROTATED"
+          },
+          {
+            "name": "iam-root-access-key-check",
+            "identifier": "IAM_ROOT_ACCESS_KEY_CHECK"
+          },
+          {
+            "name": "encrypted-volumes",
+            "identifier": "ENCRYPTED_VOLUMES"
+          },
+          {
+            "name": "rds-encryption-enabled",
+            "identifier": "RDS_STORAGE_ENCRYPTED"
+          },
+          {
+            "name": "s3-server-side-encryption-enabled",
+            "identifier": "S3_BUCKET_SERVER_SIDE_ENCRYPTION_ENABLED"
+          }
+        ]
+      }
+    ],
+    
+    "cloudwatch_metric_sets": [
+      {
+        "regions": ["us-east-1", "us-west-2"],
+        "accounts": ["Management"],
+        "metrics": [
+          {
+            "filter_name": "RootAccountUsageMetricFilter",
+            "log_group_name": "aws-controltower/CloudTrailLogs",
+            "filter_pattern": "{$.userIdentity.type=\"Root\" && $.userIdentity.invokedBy NOT EXISTS && $.eventType !=\"AwsServiceEvent\"}",
+            "metric_namespace": "LogMetrics",
+            "metric_name": "RootAccountUsage",
+            "metric_value": "1",
+            "description": "Monitor root account usage for enterprise security"
+          },
+          {
+            "filter_name": "UnauthorizedAPICallsMetricFilter",
+            "log_group_name": "aws-controltower/CloudTrailLogs",
+            "filter_pattern": "{($.errorCode=\"*UnauthorizedOperation\") || ($.errorCode=\"AccessDenied*\")}",
+            "metric_namespace": "LogMetrics",
+            "metric_name": "UnauthorizedAPICalls",
+            "metric_value": "1",
+            "description": "Monitor unauthorized API calls"
+          },
+          {
+            "filter_name": "IAMPolicyChangesMetricFilter",
+            "log_group_name": "aws-controltower/CloudTrailLogs",
+            "filter_pattern": "{($.eventName=DeleteGroupPolicy) || ($.eventName=DeleteRolePolicy) || ($.eventName=DeleteUserPolicy) || ($.eventName=PutGroupPolicy) || ($.eventName=PutRolePolicy) || ($.eventName=PutUserPolicy) || ($.eventName=CreateRole) || ($.eventName=DeleteRole) || ($.eventName=CreatePolicy) || ($.eventName=DeletePolicy)}",
+            "metric_namespace": "LogMetrics",
+            "metric_name": "IAMPolicyChanges",
+            "metric_value": "1",
+            "description": "Monitor IAM policy changes"
+          }
+        ]
+      }
+    ],
+    
+    "cloudwatch_alarm_sets": [
+      {
+        "regions": ["us-east-1", "us-west-2"],
+        "accounts": ["Management"],
+        "alarms": [
+          {
+            "alarm_name": "Ent-RootAccountUsage",
+            "alarm_description": "Alert on root account usage for enterprise security",
+            "sns_topic_name": "Security",
+            "metric_name": "RootAccountUsage",
+            "namespace": "LogMetrics",
+            "comparison_operator": "GreaterThanOrEqualToThreshold",
+            "evaluation_periods": 1,
+            "period": 300,
+            "statistic": "Sum",
+            "threshold": 1,
+            "treat_missing_data": "notBreaching"
+          },
+          {
+            "alarm_name": "Ent-UnauthorizedAPICalls",
+            "alarm_description": "Alert on unauthorized API calls",
+            "sns_topic_name": "Security",
+            "metric_name": "UnauthorizedAPICalls",
+            "namespace": "LogMetrics",
+            "comparison_operator": "GreaterThanOrEqualToThreshold",
+            "evaluation_periods": 1,
+            "period": 300,
+            "statistic": "Sum",
+            "threshold": 1,
+            "treat_missing_data": "notBreaching"
+          },
+          {
+            "alarm_name": "Ent-IAMPolicyChanges",
+            "alarm_description": "Alert on IAM policy changes",
+            "sns_topic_name": "Security",
+            "metric_name": "IAMPolicyChanges",
+            "namespace": "LogMetrics",
+            "comparison_operator": "GreaterThanOrEqualToThreshold",
+            "evaluation_periods": 1,
+            "period": 300,
+            "statistic": "Sum",
+            "threshold": 1,
+            "treat_missing_data": "notBreaching"
+          }
+        ]
+      }
+    ],
+    
+    "management_account_email": "management-account@{{domain}}",
+    "log_archive_account_email": "log-archive@{{domain}}",
+    "audit_account_email": "audit@{{domain}}",
+    
+    "infrastructure_accounts": [
+      {
+        "name": "SharedServices",
+        "description": "The SharedServices account for enterprise services",
+        "email": "shared-services@{{domain}}",
+        "organizational_unit": "Infrastructure"
+      },
+      {
+        "name": "Network",
+        "description": "The Network account for enterprise networking",
+        "email": "network@{{domain}}",
+        "organizational_unit": "Infrastructure"
+      },
+      {
+        "name": "Monitoring",
+        "description": "The Monitoring account for centralized observability",
+        "email": "monitoring@{{domain}}",
+        "organizational_unit": "Infrastructure"
+      }
+    ],
+    
+    "network_architecture_type": "TGW",
+    "default_vpc_delete": true,
+    "centralized_networking": true,
+    "network_account": "Network",
+    
+    "network_endpoint_vpc": {
+      "enabled": true,
+      "availability_zones": 3,
+      "subnets_per_az": 2,
+      "central_endpoints": true,
+      "required_endpoints": ["ec2", "ec2messages", "ssm", "ssmmessages", "kms", "logs", "s3", "dynamodb"]
+    },
+    
+    "network_workload_vpcs": {
+      "enabled": true,
+      "availability_zones": 3,
+      "subnets_per_az": 3,
+      "deployment_targets": {
+        "organizational_units": ["Workloads", "Development", "Production"]
+      }
+    },
+    
+    "network_transit_gateway": {
+      "enabled": true,
+      "route_table_structure": "segregated",
+      "route_tables": ["Core", "Segregated", "Shared", "Development", "Production", "Standalone"]
+    },
+    
+    "network_hybrid_connectivity": {
+      "enabled": true,
+      "type": "DirectConnect"
+    },
+    
+    "route53_resolver_enabled": true,
+    "route53_resolver_outbound_domains": ["corp.example.com", "internal.example.com"],
+    "route53_resolver_on_prem_dns_servers": ["192.168.1.10", "192.168.1.11"],
+    "route53_resolver_allowed_source_cidrs": ["192.168.0.0/16", "10.0.0.0/8"],
+    
+    "ipam_enabled": true,
+    "ipam_operating_regions": ["us-east-1", "us-west-2"],
+    "ipam_pools": [
+      {
+        "name": "global-pool",
+        "description": "Global IPAM pool for enterprise",
+        "provisionedCidrs": ["10.100.0.0/16"]
+      },
+      {
+        "name": "regional-pool-us-east-1",
+        "description": "Regional pool for us-east-1",
+        "locale": "us-east-1",
+        "sourceIpamPool": "global-pool",
+        "provisionedCidrs": ["10.100.0.0/17"],
+        "shareTargets": {
+          "organizationalUnits": ["Infrastructure", "Workloads", "Development", "Production"]
+        }
+      },
+      {
+        "name": "regional-pool-us-west-2",
+        "description": "Regional pool for us-west-2",
+        "locale": "us-west-2",
+        "sourceIpamPool": "global-pool",
+        "provisionedCidrs": ["10.100.128.0/17"],
+        "shareTargets": {
+          "organizationalUnits": ["Infrastructure", "Workloads", "Development", "Production"]
+        }
+      }
+    ],
+    
+    "budgets": [
+      {
+        "accounts": ["Management"],
+        "name": "enterprise-accel-budget",
+        "time_unit": "MONTHLY",
+        "type": "COST",
+        "amount": 25000,
+        "include_upfront": true,
+        "include_tax": true,
+        "include_support": true,
+        "include_subscription": true,
+        "include_recurring": true,
+        "include_other_subscription": true,
+        "include_discount": true,
+        "include_credit": false,
+        "include_refund": false,
+        "use_blended": false,
+        "use_amortized": false,
+        "unit": "USD",
+        "notifications": [
+          {"type": "ACTUAL"},
+          {"type": "FORECASTED"}
+        ]
+      }
+    ],
+    
+    "compute_optimizer_enable": true,
+    "cost_optimization_hub_enable": true
+  }
+}

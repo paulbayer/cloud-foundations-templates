@@ -1,0 +1,592 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Backup Policies - Organization-wide backup policy enforcement with parameterized deployment'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Global Configuration"
+        Parameters:
+          - uOrganizationId
+          - uSSMParameterPrefix
+      - Label:
+          default: "Daily Backup Policy (30-day retention)"
+        Parameters:
+          - tDeployDailyBackup
+          - tDailyBackupDescription
+          - uDailyBackupTargets
+      - Label:
+          default: "Weekly Backup Policy (90-day retention)"
+        Parameters:
+          - tDeployWeeklyBackup
+          - tWeeklyBackupDescription
+          - uWeeklyBackupTargets
+      - Label:
+          default: "Monthly Backup Policy (365-day retention)"
+        Parameters:
+          - tDeployMonthlyBackup
+          - tMonthlyBackupDescription
+          - uMonthlyBackupTargets
+    ParameterLabels:
+      uOrganizationId:
+        default: "Organization ID"
+      uSSMParameterPrefix:
+        default: "SSM Parameter Prefix"
+      tDeployDailyBackup:
+        default: "Deploy Daily Backup Policy"
+      tDailyBackupDescription:
+        default: "Daily Backup Policy Description"
+      uDailyBackupTargets:
+        default: "Daily Backup Policy Targets"
+      tDeployWeeklyBackup:
+        default: "Deploy Weekly Backup Policy"
+      tWeeklyBackupDescription:
+        default: "Weekly Backup Policy Description"
+      uWeeklyBackupTargets:
+        default: "Weekly Backup Policy Targets"
+      tDeployMonthlyBackup:
+        default: "Deploy Monthly Backup Policy"
+      tMonthlyBackupDescription:
+        default: "Monthly Backup Policy Description"
+      uMonthlyBackupTargets:
+        default: "Monthly Backup Policy Targets"
+
+Parameters:
+  # Global parameters
+  uOrganizationId:
+    Type: String
+    Description: AWS Organization ID
+    Default: ''
+
+  uSSMParameterPrefix:
+    Type: String
+    Default: "/titanium/organization/ou-ids"
+    Description: "SSM Parameter Store path prefix where OU IDs are stored"
+  
+  # Daily Backup Policy Parameters
+  tDeployDailyBackup:
+    Type: String
+    Default: true
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Daily Backup policy - Daily backups with 30-day retention"
+  
+  tDailyBackupDescription:
+    Type: String
+    Default: "Daily backups with 30-day retention"
+    Description: "Description for Daily Backup policy"
+  
+  uDailyBackupTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for Daily Backup policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+  # Weekly Backup Policy Parameters
+  tDeployWeeklyBackup:
+    Type: String
+    Default: true
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Weekly Backup policy - Weekly backups with 90-day retention"
+  
+  tWeeklyBackupDescription:
+    Type: String
+    Default: "Weekly backups with 90-day retention"
+    Description: "Description for Weekly Backup policy"
+  
+  uWeeklyBackupTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for Weekly Backup policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+  # Monthly Backup Policy Parameters
+  tDeployMonthlyBackup:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Monthly Backup policy - Monthly backups with 365-day retention"
+  
+  tMonthlyBackupDescription:
+    Type: String
+    Default: "Monthly backups with 365-day retention"
+    Description: "Description for Monthly Backup policy"
+  
+  uMonthlyBackupTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for Monthly Backup policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+Conditions:
+  CreateDailyBackup: !Equals [!Ref tDeployDailyBackup, "true"]
+  CreateWeeklyBackup: !Equals [!Ref tDeployWeeklyBackup, "true"]
+  CreateMonthlyBackup: !Equals [!Ref tDeployMonthlyBackup, "true"]
+  AnyBackupPolicyEnabled: !Or
+    - !Condition CreateDailyBackup
+    - !Condition CreateWeeklyBackup
+    - !Condition CreateMonthlyBackup
+
+Resources:
+  # Lambda function to enable BACKUP_POLICY type in the organization
+  EnableBackupPolicyTypeFunction:
+    Type: AWS::Lambda::Function
+    Condition: AnyBackupPolicyEnabled
+    Properties:
+      FunctionName: TitaniumEnableBackupPolicyType
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt EnablePolicyTypeRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          
+          def handler(event, context):
+              """
+              Custom resource handler to enable BACKUP_POLICY type in AWS Organizations.
+              This is required before backup policies can be created and attached.
+              """
+              try:
+                  organizations = boto3.client('organizations')
+                  request_type = event['RequestType']
+                  
+                  print(f"Request Type: {request_type}")
+                  
+                  if request_type in ['Create', 'Update']:
+                      # Get the organization root ID
+                      roots_response = organizations.list_roots()
+                      root_id = roots_response['Roots'][0]['Id']
+                      
+                      print(f"Organization Root ID: {root_id}")
+                      
+                      # Enable BACKUP_POLICY type
+                      try:
+                          organizations.enable_policy_type(
+                              RootId=root_id,
+                              PolicyType='BACKUP_POLICY'
+                          )
+                          print("Successfully enabled BACKUP_POLICY type")
+                      except organizations.exceptions.PolicyTypeAlreadyEnabledException:
+                          print("BACKUP_POLICY type already enabled")
+                          pass  # Already enabled, this is fine
+                      except Exception as e:
+                          print(f"Error enabling policy type: {str(e)}")
+                          raise
+                  
+                  # For Delete, we don't disable the policy type as other policies might be using it
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              
+              except Exception as e:
+                  print(f"Error in handler: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'error': str(e)})
+      Timeout: 60
+      MemorySize: 128
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # Custom resource to trigger policy type enablement
+  EnableBackupPolicyType:
+    Type: Custom::EnableBackupPolicyType
+    Condition: AnyBackupPolicyEnabled
+    Properties:
+      ServiceToken: !GetAtt EnableBackupPolicyTypeFunction.Arn
+
+  # IAM role for the EnableBackupPolicyType Lambda function
+  EnablePolicyTypeRole:
+    Type: AWS::IAM::Role
+    Condition: AnyBackupPolicyEnabled
+    Properties:
+      RoleName: TitaniumEnableBackupPolicyTypeRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EnableBackupPolicyType
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:EnablePolicyType
+                  - organizations:ListRoots
+                  - organizations:DescribeOrganization
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # Daily Backup Policy (30-day retention)
+  DailyBackupPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateDailyBackup
+    DependsOn: EnableBackupPolicyType
+    Properties:
+      Name: DailyBackup
+      Description: !Ref tDailyBackupDescription
+      Type: BACKUP_POLICY
+      Content: !Sub |
+        {
+          "plans": {
+            "DailyBackupPlan": {
+              "regions": {
+                "@@assign": ["${AWS::Region}"]
+              },
+              "rules": {
+                "DailyBackupRule": {
+                  "schedule_expression": {
+                    "@@assign": "cron(0 5 ? * * *)"
+                  },
+                  "start_backup_window_minutes": {
+                    "@@assign": "60"
+                  },
+                  "complete_backup_window_minutes": {
+                    "@@assign": "120"
+                  },
+                  "lifecycle": {
+                    "delete_after_days": {
+                      "@@assign": "30"
+                    }
+                  },
+                  "target_backup_vault_name": {
+                    "@@assign": "Default"
+                  },
+                  "copy_actions": {}
+                }
+              },
+              "selections": {
+                "tags": {
+                  "DailyBackupSelection": {
+                    "iam_role_arn": {
+                      "@@assign": "arn:aws:iam::$account:role/service-role/AWSBackupDefaultServiceRole"
+                    },
+                    "tag_key": {
+                      "@@assign": "BackupSchedule"
+                    },
+                    "tag_value": {
+                      "@@assign": ["Daily"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Weekly Backup Policy (90-day retention)
+  WeeklyBackupPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateWeeklyBackup
+    DependsOn: EnableBackupPolicyType
+    Properties:
+      Name: WeeklyBackup
+      Description: !Ref tWeeklyBackupDescription
+      Type: BACKUP_POLICY
+      Content: !Sub |
+        {
+          "plans": {
+            "WeeklyBackupPlan": {
+              "regions": {
+                "@@assign": ["${AWS::Region}"]
+              },
+              "rules": {
+                "WeeklyBackupRule": {
+                  "schedule_expression": {
+                    "@@assign": "cron(0 5 ? * SUN *)"
+                  },
+                  "start_backup_window_minutes": {
+                    "@@assign": "60"
+                  },
+                  "complete_backup_window_minutes": {
+                    "@@assign": "120"
+                  },
+                  "lifecycle": {
+                    "delete_after_days": {
+                      "@@assign": "90"
+                    }
+                  },
+                  "target_backup_vault_name": {
+                    "@@assign": "Default"
+                  },
+                  "copy_actions": {}
+                }
+              },
+              "selections": {
+                "tags": {
+                  "WeeklyBackupSelection": {
+                    "iam_role_arn": {
+                      "@@assign": "arn:aws:iam::$account:role/service-role/AWSBackupDefaultServiceRole"
+                    },
+                    "tag_key": {
+                      "@@assign": "BackupSchedule"
+                    },
+                    "tag_value": {
+                      "@@assign": ["Weekly"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Monthly Backup Policy (365-day retention)
+  MonthlyBackupPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateMonthlyBackup
+    DependsOn: EnableBackupPolicyType
+    Properties:
+      Name: MonthlyBackup
+      Description: !Ref tMonthlyBackupDescription
+      Type: BACKUP_POLICY
+      Content: !Sub |
+        {
+          "plans": {
+            "MonthlyBackupPlan": {
+              "regions": {
+                "@@assign": ["${AWS::Region}"]
+              },
+              "rules": {
+                "MonthlyBackupRule": {
+                  "schedule_expression": {
+                    "@@assign": "cron(0 5 1 * ? *)"
+                  },
+                  "start_backup_window_minutes": {
+                    "@@assign": "60"
+                  },
+                  "complete_backup_window_minutes": {
+                    "@@assign": "120"
+                  },
+                  "lifecycle": {
+                    "delete_after_days": {
+                      "@@assign": "365"
+                    }
+                  },
+                  "target_backup_vault_name": {
+                    "@@assign": "Default"
+                  },
+                  "copy_actions": {}
+                }
+              },
+              "selections": {
+                "tags": {
+                  "MonthlyBackupSelection": {
+                    "iam_role_arn": {
+                      "@@assign": "arn:aws:iam::$account:role/service-role/AWSBackupDefaultServiceRole"
+                    },
+                    "tag_key": {
+                      "@@assign": "BackupSchedule"
+                    },
+                    "tag_value": {
+                      "@@assign": ["Monthly"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Lambda function to attach backup policies to OUs
+  PolicyAttachmentFunction:
+    Type: AWS::Lambda::Function
+    Condition: AnyBackupPolicyEnabled
+    Properties:
+      FunctionName: TitaniumBackupPolicyAttachment
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt PolicyAttachmentRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          
+          def handler(event, context):
+              """
+              Custom resource handler to attach backup policies to organizational units.
+              Handles Create, Update, and Delete operations idempotently.
+              """
+              try:
+                  organizations = boto3.client('organizations')
+                  request_type = event['RequestType']
+                  properties = event['ResourceProperties']
+                  
+                  print(f"Request Type: {request_type}")
+                  print(f"Properties: {json.dumps(properties, default=str)}")
+                  
+                  # Collect all policies to attach
+                  policies_to_attach = []
+                  
+                  # Daily Backup Policy
+                  if properties.get('AttachDailyBackup') == 'true':
+                      policy_id = properties.get('DailyBackupPolicyId')
+                      targets = properties.get('DailyBackupTargets', [])
+                      if policy_id and targets:
+                          policies_to_attach.append({
+                              'PolicyId': policy_id,
+                              'Targets': [t.strip() for t in targets if t.strip()],
+                              'Name': 'DailyBackup'
+                          })
+                  
+                  # Weekly Backup Policy
+                  if properties.get('AttachWeeklyBackup') == 'true':
+                      policy_id = properties.get('WeeklyBackupPolicyId')
+                      targets = properties.get('WeeklyBackupTargets', [])
+                      if policy_id and targets:
+                          policies_to_attach.append({
+                              'PolicyId': policy_id,
+                              'Targets': [t.strip() for t in targets if t.strip()],
+                              'Name': 'WeeklyBackup'
+                          })
+                  
+                  # Monthly Backup Policy
+                  if properties.get('AttachMonthlyBackup') == 'true':
+                      policy_id = properties.get('MonthlyBackupPolicyId')
+                      targets = properties.get('MonthlyBackupTargets', [])
+                      if policy_id and targets:
+                          policies_to_attach.append({
+                              'PolicyId': policy_id,
+                              'Targets': [t.strip() for t in targets if t.strip()],
+                              'Name': 'MonthlyBackup'
+                          })
+                  
+                  if request_type in ['Create', 'Update']:
+                      # Attach policies to targets
+                      for policy in policies_to_attach:
+                          for target in policy['Targets']:
+                              if target:  # Skip empty targets
+                                  try:
+                                      organizations.attach_policy(
+                                          PolicyId=policy['PolicyId'],
+                                          TargetId=target
+                                      )
+                                      print(f"Successfully attached {policy['Name']} policy {policy['PolicyId']} to {target}")
+                                  except organizations.exceptions.DuplicatePolicyAttachmentException:
+                                      print(f"Policy {policy['PolicyId']} already attached to {target}")
+                                      pass  # Policy already attached, this is fine
+                                  except Exception as e:
+                                      print(f"Error attaching policy {policy['PolicyId']} to {target}: {str(e)}")
+                                      # Continue with other attachments even if one fails
+                  
+                  elif request_type == 'Delete':
+                      # Detach policies from targets
+                      for policy in policies_to_attach:
+                          for target in policy['Targets']:
+                              if target:  # Skip empty targets
+                                  try:
+                                      organizations.detach_policy(
+                                          PolicyId=policy['PolicyId'],
+                                          TargetId=target
+                                      )
+                                      print(f"Successfully detached {policy['Name']} policy {policy['PolicyId']} from {target}")
+                                  except organizations.exceptions.PolicyNotAttachedException:
+                                      print(f"Policy {policy['PolicyId']} not attached to {target}")
+                                      pass  # Policy not attached, this is fine
+                                  except Exception as e:
+                                      print(f"Error detaching policy {policy['PolicyId']} from {target}: {str(e)}")
+                                      # Continue with other detachments even if one fails
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              
+              except Exception as e:
+                  print(f"Error in handler: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'error': str(e)})
+      Timeout: 300
+      MemorySize: 128
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # IAM role for the PolicyAttachment Lambda function
+  PolicyAttachmentRole:
+    Type: AWS::IAM::Role
+    Condition: AnyBackupPolicyEnabled
+    Properties:
+      RoleName: TitaniumBackupPolicyAttachmentRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BackupPolicyAttachment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:AttachPolicy
+                  - organizations:DetachPolicy
+                  - organizations:ListPolicies
+                  - organizations:ListTargetsForPolicy
+                  - organizations:DescribePolicy
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # Custom Resource for Attaching Backup Policies to OUs
+  PolicyAttachments:
+    Type: Custom::BackupPolicyAttachments
+    Condition: AnyBackupPolicyEnabled
+    Properties:
+      ServiceToken: !GetAtt PolicyAttachmentFunction.Arn
+      # Daily Backup Policy
+      AttachDailyBackup: !Ref tDeployDailyBackup
+      DailyBackupPolicyId: !If [CreateDailyBackup, !Ref DailyBackupPolicy, ""]
+      DailyBackupTargets: !Ref uDailyBackupTargets
+      # Weekly Backup Policy
+      AttachWeeklyBackup: !Ref tDeployWeeklyBackup
+      WeeklyBackupPolicyId: !If [CreateWeeklyBackup, !Ref WeeklyBackupPolicy, ""]
+      WeeklyBackupTargets: !Ref uWeeklyBackupTargets
+      # Monthly Backup Policy
+      AttachMonthlyBackup: !Ref tDeployMonthlyBackup
+      MonthlyBackupPolicyId: !If [CreateMonthlyBackup, !Ref MonthlyBackupPolicy, ""]
+      MonthlyBackupTargets: !Ref uMonthlyBackupTargets
+
+Outputs:
+  DailyBackupPolicyId:
+    Description: ID of the Daily Backup policy
+    Value: !If [CreateDailyBackup, !Ref DailyBackupPolicy, "Not Deployed"]
+    Export:
+      Name: !Sub "${AWS::StackName}-DailyBackupPolicyId"
+  
+  WeeklyBackupPolicyId:
+    Description: ID of the Weekly Backup policy
+    Value: !If [CreateWeeklyBackup, !Ref WeeklyBackupPolicy, "Not Deployed"]
+    Export:
+      Name: !Sub "${AWS::StackName}-WeeklyBackupPolicyId"
+  
+  MonthlyBackupPolicyId:
+    Description: ID of the Monthly Backup policy
+    Value: !If [CreateMonthlyBackup, !Ref MonthlyBackupPolicy, "Not Deployed"]
+    Export:
+      Name: !Sub "${AWS::StackName}-MonthlyBackupPolicyId"
+  
+  BackupPolicyTypeEnabled:
+    Description: Indicates whether BACKUP_POLICY type is enabled in the organization
+    Value: !If [AnyBackupPolicyEnabled, "true", "false"]

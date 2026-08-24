@@ -1,0 +1,563 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Hybrid DNS Resolver Infrastructure for Network Account - Creates dedicated DNS VPC with Route53 Resolver endpoints and centralized DNS profile for organization-wide sharing'
+
+Parameters:
+  # Single Deployment Control
+  tDeployHybridDNS:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of complete hybrid DNS infrastructure (template-controlled: VPC, resolver endpoints, rules, and profiles)"
+
+  # Account Targeting
+  uNetworkAccountId:
+    Type: String
+    Description: "Account ID of the Network Account where DNS infrastructure will be deployed (user-provided)"
+    Default: ""
+  
+  uManagementAccountId:
+    Type: String
+    Description: "Account ID of the Management Account of the Landing Zone (user-provided)"
+    Default: ""
+  
+  uOrganizationId:
+    Type: String
+    Description: "ID of the AWS Organization of the Landing Zone (user-provided, format: o-xxxxxxxxx)"
+    Default: ""
+
+  # VPC Configuration (IPAM Integration)
+  tDeployIPAM:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Use IPAM for DNS VPC CIDR allocation (template-controlled)"
+
+  # Transit Gateway Integration
+  uTransitGatewayId:
+    Type: String
+    Description: "Transit Gateway ID for DNS VPC attachment (user-provided, leave empty to reference from SSM)"
+    Default: ""
+
+  # Route53 Profile Configuration
+  tDNSProfileName:
+    Type: String
+    Default: "CentralizedDNSProfile"
+    Description: "Name for the centralized Route53 profile (template-controlled)"
+    MaxLength: 64
+    MinLength: 1
+
+  # On-Premises DNS Configuration
+  tOnPremDomains:
+    Type: CommaDelimitedList
+    Default: "corp.example.com"
+    Description: "Comma-separated list of on-premises domains to forward (template-controlled, e.g., corp.example.com,internal.company.com)"
+  
+  tOnPremDnsServers:
+    Type: CommaDelimitedList
+    Default: "192.168.0.10,192.168.0.11"
+    Description: "Comma-separated list of on-premises DNS server IP addresses (template-controlled)"
+  
+  tAllowedSourceCidrs:
+    Type: CommaDelimitedList
+    Default: "192.168.0.0/16,10.0.0.0/8"
+    Description: "Comma-separated list of CIDR blocks allowed to query the resolver endpoints (template-controlled)"
+
+  # Organization Sharing
+  uOrganizationalUnitArns:
+    Type: CommaDelimitedList
+    # RAM requires OU ARNs (or an org ARN / account IDs) as share principals; raw
+    # OU IDs (ou-xxxx) are rejected with "Principal ID is malformed" (issue #98).
+    # CloudFormation cannot build ARNs from a list of IDs, so the full ARN is
+    # supplied here. Build each as:
+    #   arn:aws:organizations::<mgmt-account-id>:ou/<org-id>/<ou-id>
+    # (the deploy agent already resolves the OU IDs, mgmt account and org id).
+    Description: "Comma-separated list of Organization Unit ARNs (user-provided, format: arn:aws:organizations::<mgmt-account-id>:ou/<org-id>/<ou-id>) to share DNS profile with (leave empty to share with the whole organization)"
+    Default: ""
+
+  # Cross-Account Integration
+  uVPCFlowLogsBucketName:
+    Type: String
+    Description: "S3 bucket name for VPC flow logs from Log Archive account (user-provided)"
+    Default: ""
+
+  # Honors the user's vpcFlowLogs.enabled choice (#107): when false, no VPC flow
+  # log is created even if a bucket exists.
+  tEnableVpcFlowLogs:
+    Type: String
+    Description: "Create the VPC flow log for this VPC"
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  DeployDNS: !Equals [!Ref tDeployHybridDNS, "true"]
+  EnableIPAM: !Equals [!Ref tDeployIPAM, "true"]
+  HasFlowLogsBucket: !Not [!Equals [!Ref uVPCFlowLogsBucketName, ""]]
+  EnableVpcFlowLogs: !Equals [!Ref tEnableVpcFlowLogs, "true"]
+  # Only create the DNS VPC flow log when flow logs are enabled AND a bucket
+  # exists to deliver to (previously it was created whenever DNS deployed, with
+  # a NoValue destination when no bucket — invalid, and ignoring the toggle).
+  CreateVpcFlowLogs: !And
+    - !Condition DeployDNS
+    - !Condition EnableVpcFlowLogs
+    - !Condition HasFlowLogsBucket
+  UseTransitGatewayFromSSM: !Equals [!Ref uTransitGatewayId, ""]
+  ShareWithSpecificOUs: !Not [!Equals [!Select [0, !Ref uOrganizationalUnitArns], ""]]
+  # "Has a second element?" without ever indexing a possibly-absent index 1.
+  # Conditions resolve eagerly, so !Select [1, <1-element list>] throws at
+  # parse time ("Fn::Select cannot select nonexistent value at index 1") and
+  # rolls back the whole stack when only one CIDR / DNS server is given
+  # (issue #112). Instead pad the list with a sentinel so it always has >=2
+  # elements, then check whether index 1 is still the sentinel: sentinel ->
+  # single element (condition false); real value -> multiple (condition true).
+  HasMultipleCidrs: !Not
+    - !Equals
+      - !Select [1, !Split [",", !Join [",", [!Join [",", !Ref tAllowedSourceCidrs], "__pad__"]]]]
+      - "__pad__"
+  HasMultipleDnsServers: !Not
+    - !Equals
+      - !Select [1, !Split [",", !Join [",", [!Join [",", !Ref tOnPremDnsServers], "__pad__"]]]]
+      - "__pad__"
+
+Resources:
+  # Dedicated DNS Resolver VPC
+  DNSResolverVPC:
+    Type: AWS::EC2::VPC
+    Condition: DeployDNS
+    Properties:
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Ipv4IpamPoolId: !If
+        - EnableIPAM
+        - !Sub "{{resolve:ssm:/network/ipam/regional-pools/${AWS::Region}}}"
+        - !Ref AWS::NoValue
+      Ipv4NetmaskLength: !If
+        - EnableIPAM
+        - 24
+        - !Ref AWS::NoValue
+      CidrBlock: !If
+        - EnableIPAM
+        - !Ref AWS::NoValue
+        - "10.0.1.0/26"  # Fallback CIDR if IPAM not used
+      Tags:
+        - Key: Name
+          Value: !Sub "vpc-${AWS::Region}-dns-resolver-001"
+        - Key: Purpose
+          Value: "HybridDNSResolution"
+        - Key: Component
+          Value: "NetworkingInfrastructure"
+
+  # VPC Flow Logs
+  DNSVPCFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Condition: CreateVpcFlowLogs
+    DependsOn: DNSResolverVPC
+    Properties:
+      LogDestination: !Sub "arn:aws:s3:::${uVPCFlowLogsBucketName}/dns-resolver-vpc/"
+      LogDestinationType: s3
+      ResourceId: !Ref DNSResolverVPC
+      ResourceType: VPC
+      TrafficType: ALL
+      Tags:
+        - Key: Name
+          Value: "DNSResolverVPC-FlowLogs"
+        - Key: Purpose
+          Value: "SecurityMonitoring"
+
+  # DNS Resolver Subnets (2 AZs for High Availability)
+  DNSResolverSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Condition: DeployDNS
+    Properties:
+      VpcId: !Ref DNSResolverVPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [0, !Cidr [!GetAtt DNSResolverVPC.CidrBlock, 4, 4]]
+      Tags:
+        - Key: Name
+          Value: "DNS Resolver Subnet AZ 1"
+        - Key: Type
+          Value: "DNSResolver"
+
+  DNSResolverSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Condition: DeployDNS
+    Properties:
+      VpcId: !Ref DNSResolverVPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [1, !Cidr [!GetAtt DNSResolverVPC.CidrBlock, 4, 4]]
+      Tags:
+        - Key: Name
+          Value: "DNS Resolver Subnet AZ 2" 
+        - Key: Type
+          Value: "DNSResolver"
+
+  # Transit Gateway Attachment Subnets
+  TGWSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Condition: DeployDNS
+    Properties:
+      VpcId: !Ref DNSResolverVPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [2, !Cidr [!GetAtt DNSResolverVPC.CidrBlock, 4, 4]]
+      Tags:
+        - Key: Name
+          Value: "TGW Attachment Subnet AZ 1"
+        - Key: Type
+          Value: "TransitGatewayAttachment"
+
+  TGWSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Condition: DeployDNS
+    Properties:
+      VpcId: !Ref DNSResolverVPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [3, !Cidr [!GetAtt DNSResolverVPC.CidrBlock, 4, 4]]
+      Tags:
+        - Key: Name
+          Value: "TGW Attachment Subnet AZ 2"
+        - Key: Type
+          Value: "TransitGatewayAttachment"
+
+  # Security Groups for Resolver Endpoints
+  InboundResolverSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: DeployDNS
+    Properties:
+      GroupDescription: "Security group for Route53 inbound resolver endpoint"
+      VpcId: !Ref DNSResolverVPC
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Select [0, !Ref tAllowedSourceCidrs]
+          Description: "Allow DNS UDP queries from allowed sources"
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Select [0, !Ref tAllowedSourceCidrs]
+          Description: "Allow DNS TCP queries from allowed sources"
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow all outbound traffic"
+      Tags:
+        - Key: Name
+          Value: "sg-dns-inbound-resolver"
+        - Key: Purpose
+          Value: "DNSInboundResolution"
+
+  # Additional ingress rule for second CIDR block
+  InboundResolverSecurityGroupRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: DeployDNS
+    Properties:
+      GroupId: !Ref InboundResolverSecurityGroup
+      IpProtocol: udp
+      FromPort: 53
+      ToPort: 53
+      CidrIp: !If
+        - HasMultipleCidrs
+        - !Select [1, !Ref tAllowedSourceCidrs]
+        - "10.0.0.0/8"
+      Description: "Allow DNS UDP queries from additional sources"
+
+  InboundResolverSecurityGroupRuleTCP:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: DeployDNS
+    Properties:
+      GroupId: !Ref InboundResolverSecurityGroup
+      IpProtocol: tcp
+      FromPort: 53
+      ToPort: 53
+      CidrIp: !If
+        - HasMultipleCidrs
+        - !Select [1, !Ref tAllowedSourceCidrs]
+        - "10.0.0.0/8"
+      Description: "Allow DNS TCP queries from additional sources"
+
+  OutboundResolverSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: DeployDNS
+    Properties:
+      GroupDescription: "Security group for Route53 outbound resolver endpoint"
+      VpcId: !Ref DNSResolverVPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          SourceSecurityGroupId: !Ref InboundResolverSecurityGroup
+          Description: "Allow traffic from inbound resolver"
+      SecurityGroupEgress:
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Select [0, !Ref tAllowedSourceCidrs]
+          Description: "Allow DNS UDP queries to on-premises DNS servers"
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Select [0, !Ref tAllowedSourceCidrs]
+          Description: "Allow DNS TCP queries to on-premises DNS servers"
+      Tags:
+        - Key: Name
+          Value: "sg-dns-outbound-resolver"
+        - Key: Purpose
+          Value: "DNSOutboundResolution"
+
+  # Route53 Resolver Endpoints
+  InboundResolverEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Condition: DeployDNS
+    Properties:
+      Direction: INBOUND
+      Name: !Sub "${tDNSProfileName}-InboundEndpoint"
+      IpAddresses:
+        - SubnetId: !Ref DNSResolverSubnetAZ1
+        - SubnetId: !Ref DNSResolverSubnetAZ2
+      SecurityGroupIds:
+        - !Ref InboundResolverSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${tDNSProfileName}-InboundEndpoint"
+        - Key: Purpose
+          Value: "HybridDNSInbound"
+
+  OutboundResolverEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Condition: DeployDNS
+    Properties:
+      Direction: OUTBOUND
+      Name: !Sub "${tDNSProfileName}-OutboundEndpoint"
+      IpAddresses:
+        - SubnetId: !Ref DNSResolverSubnetAZ1
+        - SubnetId: !Ref DNSResolverSubnetAZ2
+      SecurityGroupIds:
+        - !Ref OutboundResolverSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${tDNSProfileName}-OutboundEndpoint"
+        - Key: Purpose
+          Value: "HybridDNSOutbound"
+
+  # Route53 Resolver Rules for On-Premises Domains
+  OnPremDomainResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Condition: DeployDNS
+    Properties:
+      DomainName: !Select [0, !Ref tOnPremDomains]
+      RuleType: FORWARD
+      Name: !Sub "${tDNSProfileName}-OnPremDomain-Rule"
+      ResolverEndpointId: !Ref OutboundResolverEndpoint
+      TargetIps:
+        - Ip: !Select [0, !Ref tOnPremDnsServers]
+          Port: 53
+        # Only forward to a second on-prem DNS server when one was provided.
+        # A single DNS server previously crashed this resource at deploy with
+        # "Fn::Select cannot select nonexistent value at index 1" (issue #112).
+        - !If
+          - HasMultipleDnsServers
+          - Ip: !Select [1, !Ref tOnPremDnsServers]
+            Port: 53
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub "${tDNSProfileName}-OnPremDomain-Rule"
+        - Key: Purpose
+          Value: "HybridDNSForwarding"
+
+  # Centralized Route53 Profile
+  CentralizedDNSProfile:
+    Type: AWS::Route53Profiles::Profile
+    Condition: DeployDNS
+    Properties:
+      Name: !Ref tDNSProfileName
+      Tags:
+        - Key: Name
+          Value: !Ref tDNSProfileName
+        - Key: Purpose
+          Value: "CentralizedDNSManagement"
+        - Key: Scope
+          Value: "Organization"
+
+  # Associate Resolver Rule with Profile
+  ProfileResolverRuleAssociation:
+    Type: AWS::Route53Profiles::ProfileResourceAssociation
+    Condition: DeployDNS
+    Properties:
+      Name: !Sub "${tDNSProfileName}-OnPremRule-Association"
+      ProfileId: !Ref CentralizedDNSProfile
+      ResourceArn: !GetAtt OnPremDomainResolverRule.Arn
+
+  # Transit Gateway Attachment
+  DNSVPCTGWAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Condition: DeployDNS
+    Properties:
+      SubnetIds:
+        - !Ref TGWSubnetAZ1
+        - !Ref TGWSubnetAZ2
+      TransitGatewayId: !If
+        - UseTransitGatewayFromSSM
+        - !Sub "{{resolve:ssm:/network/transit-gateway/id}}"
+        - !Ref uTransitGatewayId
+      VpcId: !Ref DNSResolverVPC
+      Tags:
+        - Key: Name
+          Value: "DNS Resolver VPC Attachment"
+        - Key: Purpose
+          Value: "HybridDNSConnectivity"
+
+  # CloudWatch Log Group for DNS Query Logging
+  DNSQueryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployDNS
+    Properties:
+      LogGroupName: !Sub "/aws/route53resolver/${tDNSProfileName}"
+      RetentionInDays: 90
+      Tags:
+        - Key: Purpose
+          Value: "DNSQueryLogging"
+
+  # DNS Query Logging Configuration
+  DNSQueryLoggingConfig:
+    Type: AWS::Route53Resolver::ResolverQueryLoggingConfig
+    Condition: DeployDNS
+    Properties:
+      Name: !Sub "${tDNSProfileName}-QueryLogging"
+      DestinationArn: !GetAtt DNSQueryLogGroup.Arn
+
+  # Associate Query Logging with DNS VPC
+  DNSQueryLoggingConfigAssociation:
+    Type: AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation
+    Condition: DeployDNS
+    Properties:
+      ResolverQueryLogConfigId: !Ref DNSQueryLoggingConfig
+      ResourceId: !Ref DNSResolverVPC
+
+  # Resource Share for Route53 Profile (Organization-wide sharing)
+  DNSProfileResourceShare:
+    Type: AWS::RAM::ResourceShare
+    Condition: DeployDNS
+    Properties:
+      Name: !Sub "${tDNSProfileName}-ResourceShare"
+      AllowExternalPrincipals: false
+      ResourceArns:
+        - !GetAtt CentralizedDNSProfile.Arn
+      Principals: !If
+        - ShareWithSpecificOUs
+        # Full OU ARNs (RAM rejects raw OU IDs — issue #98). See uOrganizationalUnitArns.
+        - !Ref uOrganizationalUnitArns
+        - - !Sub "arn:aws:organizations::${uManagementAccountId}:organization/${uOrganizationId}"
+      Tags:
+        - Key: Purpose
+          Value: "DNSProfileSharing"
+        - Key: Scope
+          Value: "Organization"
+
+  # SSM Parameters for cross-stack references
+  DNSVPCIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: DeployDNS
+    Properties:
+      Name: "/network/dns-resolver-vpc/id"
+      Type: String
+      Value: !Ref DNSResolverVPC
+      Description: "DNS Resolver VPC ID"
+      Tags:
+        Purpose: "CrossStackReference"
+        Component: "HybridDNS"
+
+  InboundEndpointIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: DeployDNS
+    Properties:
+      Name: "/network/dns-resolver/inbound-endpoint-id"
+      Type: String
+      Value: !Ref InboundResolverEndpoint
+      Description: "Route53 Inbound Resolver Endpoint ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  OutboundEndpointIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: DeployDNS
+    Properties:
+      Name: "/network/dns-resolver/outbound-endpoint-id"
+      Type: String
+      Value: !Ref OutboundResolverEndpoint
+      Description: "Route53 Outbound Resolver Endpoint ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  DNSProfileIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: DeployDNS
+    Properties:
+      Name: "/network/dns-resolver/profile-id"
+      Type: String
+      Value: !Ref CentralizedDNSProfile
+      Description: "Centralized DNS Profile ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  DNSProfileArnSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: DeployDNS
+    Properties:
+      Name: "/network/dns-resolver/profile-arn"
+      Type: String
+      Value: !GetAtt CentralizedDNSProfile.Arn
+      Description: "Centralized DNS Profile ARN for sharing"
+      Tags:
+        Purpose: "CrossStackReference"
+
+Outputs:
+  DNSResolverVPCId:
+    Condition: DeployDNS
+    Description: "DNS Resolver VPC ID"
+    Value: !Ref DNSResolverVPC
+    Export:
+      Name: !Sub "${AWS::StackName}-DNSResolverVPC-ID"
+
+  InboundResolverEndpointId:
+    Condition: DeployDNS
+    Description: "Route53 Inbound Resolver Endpoint ID"
+    Value: !Ref InboundResolverEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-InboundResolverEndpoint-ID"
+
+  OutboundResolverEndpointId:
+    Condition: DeployDNS
+    Description: "Route53 Outbound Resolver Endpoint ID"
+    Value: !Ref OutboundResolverEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-OutboundResolverEndpoint-ID"
+
+  CentralizedDNSProfileId:
+    Condition: DeployDNS
+    Description: "Centralized DNS Profile ID"
+    Value: !Ref CentralizedDNSProfile
+    Export:
+      Name: !Sub "${AWS::StackName}-CentralizedDNSProfile-ID"
+
+  CentralizedDNSProfileArn:
+    Condition: DeployDNS
+    Description: "Centralized DNS Profile ARN"
+    Value: !GetAtt CentralizedDNSProfile.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-CentralizedDNSProfile-ARN"
+
+  DNSVPCTGWAttachmentId:
+    Condition: DeployDNS
+    Description: "DNS VPC Transit Gateway Attachment ID"
+    Value: !Ref DNSVPCTGWAttachment
+    Export:
+      Name: !Sub "${AWS::StackName}-DNSVPCTGWAttachment-ID"
+
+  DNSProfileResourceShareId:
+    Condition: DeployDNS
+    Description: "DNS Profile Resource Share ID"
+    Value: !Ref DNSProfileResourceShare
+    Export:
+      Name: !Sub "${AWS::StackName}-DNSProfileResourceShare-ID"

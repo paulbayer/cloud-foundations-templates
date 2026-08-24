@@ -1,0 +1,185 @@
+########################################################################
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+########################################################################
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  This template creates an IAM role to configure the delegated administrator account - 'guardduty_org' solution in the repo,
+  https://github.com/aws-samples/aws-security-reference-architecture-examples (sra-1ssgnse4k)
+
+Metadata:
+  DeploymentTarget: "Audit"
+  DeploymentType: "StackSet"
+  DeploymentOrder: 4
+  Prerequisites:
+    - "Template 03 deployed (GuardDuty detector in audit account)"
+  SRA:
+    Version: "1.1"
+    Order: 4
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: General Properties
+        Parameters:
+          - uSRASolutionName
+
+      - Label:
+          default: Role Properties
+        Parameters:
+          - uGuardDutyOrgConfigurationRoleName
+          - uManagementAccountId
+          - uGuardDutyOrgLambdaRoleName
+
+    ParameterLabels:
+      uGuardDutyOrgConfigurationRoleName:
+        default: GuardDuty Configuration Role Name
+      uManagementAccountId:
+        default: Organization Management Account ID
+      uGuardDutyOrgLambdaRoleName:
+        default: Lambda Role Name
+      uSRASolutionName:
+        default: SRA Solution Name
+
+Parameters:
+  uGuardDutyOrgConfigurationRoleName:
+    AllowedPattern: '^[\w+=,.@-]{1,64}$'
+    ConstraintDescription: Max 64 alphanumeric characters. Also special characters supported [+, =, ., @, -]
+    Default: sra-guardduty-org-configuration
+    Description: GuardDuty Configuration IAM Role Name
+    Type: String
+  uManagementAccountId:
+    AllowedPattern: '^\d{12}$'
+    ConstraintDescription: Must be 12 digits
+    Description: Organization Management Account ID
+    Type: String
+  uGuardDutyOrgLambdaRoleName:
+    AllowedPattern: '^[\w+=,.@-]{1,64}$'
+    ConstraintDescription: Max 64 alphanumeric characters. Also special characters supported [+, =, ., @, -]
+    Default: sra-guardduty-org-lambda
+    Description: Lambda Role Name
+    Type: String
+  uSRASolutionName:
+    AllowedValues: [sra-guardduty-org]
+    Default: sra-guardduty-org
+    Description: The SRA solution name. The default value is the folder name of the solution
+    Type: String
+
+Resources:
+  rConfigurationRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: Actions require * in resource
+          - id: W28
+            reason: Explicit role name provided
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: IAM write actions require wildcard in resource
+    Properties:
+      RoleName: !Ref uGuardDutyOrgConfigurationRoleName
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:PrincipalArn:
+                  - !Sub arn:${AWS::Partition}:iam::${uManagementAccountId}:role/${uGuardDutyOrgLambdaRoleName}
+            Principal:
+              AWS:
+                - !Sub arn:${AWS::Partition}:iam::${uManagementAccountId}:root
+      Path: '/'
+      Policies:
+        - PolicyName: sra-guardduty-org-policy-organizations
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: OrganizationsListAccounts
+                Effect: Allow
+                Action: organizations:ListAccounts
+                Resource: '*'
+
+        - PolicyName: sra-guardduty-org-policy-guardduty
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: GuardDutyNoResource
+                Effect: Allow
+                Action: guardduty:ListDetectors
+                Resource: '*'
+
+              - Sid: GuardDutyWithResource
+                Effect: Allow
+                Action:
+                  - guardduty:CreateMembers
+                  - guardduty:CreatePublishingDestination
+                  - guardduty:DeleteDetector
+                  - guardduty:DeleteMembers
+                  - guardduty:DisassociateMembers
+                  - guardduty:ListMembers
+                  - guardduty:ListPublishingDestinations
+                  - guardduty:UpdateDetector
+                  - guardduty:UpdateMemberDetectors
+                  - guardduty:UpdateOrganizationConfiguration
+                  - guardduty:UpdatePublishingDestination
+                Resource:
+                  - !Sub arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:/detector/*
+                  - !Sub arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:detector/*
+
+        - PolicyName: sra-guardduty-org-policy-iam
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: AllowReadIamActions
+                Effect: Allow
+                Action: iam:GetRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*
+
+              - Sid: AllowCreateDeleteServiceLinkedRole
+                Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                  - iam:DeleteServiceLinkedRole
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName:
+                      - guardduty.amazonaws.com
+                      - malware-protection.guardduty.amazonaws.com
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDuty
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/malware-protection.guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDutyMalwareProtection
+
+              - Sid: AllowPolicyActions
+                Effect: Allow
+                Action:
+                  - iam:DeleteRolePolicy
+                  - iam:PutRolePolicy
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDuty
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/malware-protection.guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDutyMalwareProtection
+
+              - Sid: AllowEnableMalwareProtection
+                Effect: Allow
+                Action:
+                  - organizations:EnableAWSServiceAccess
+                  - organizations:RegisterDelegatedAdministrator
+                  - organizations:ListDelegatedAdministrators
+                  - organizations:ListAWSServiceAccessForOrganization
+                  - organizations:DescribeOrganizationalUnit
+                  - organizations:DescribeAccount
+                  - organizations:DescribeOrganization
+                Resource: '*'
+
+              - Sid: AllowGetRoleMalwareProtection
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/malware-protection.guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDutyMalwareProtection
+
+      Tags:
+        - Key: sra-solution
+          Value: !Ref uSRASolutionName

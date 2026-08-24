@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'GuardDuty Detector for Audit Account'
+
+Metadata:
+  DeploymentTarget: "Audit"
+  DeploymentType: "StackSet"
+  DeploymentOrder: 3
+  Prerequisites:
+    - "AWS Control Tower deployed"
+
+Parameters:
+  uAutoEnableS3Logs:
+    Type: String
+    Description: Auto-enable S3 logs for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uAutoEnableKubernetesAuditLogs:
+    Type: String
+    Description: Auto-enable Kubernetes audit logs for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uAutoEnableMalwareProtection:
+    Type: String
+    Description: Auto-enable Malware Protection for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+Resources:
+  rGuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: true
+      DataSources:
+        S3Logs:
+          Enable: !Ref uAutoEnableS3Logs
+        Kubernetes:
+          AuditLogs:
+            Enable: !Ref uAutoEnableKubernetesAuditLogs
+        MalwareProtection:
+          ScanEc2InstanceWithFindings:
+            EbsVolumes: !Ref uAutoEnableMalwareProtection
+
+Outputs:
+  GuardDutyDetectorId:
+    Description: ID of the GuardDuty Detector
+    Value: !Ref rGuardDutyDetector
+    Export:
+      Name: !Sub '${AWS::StackName}-DetectorId'

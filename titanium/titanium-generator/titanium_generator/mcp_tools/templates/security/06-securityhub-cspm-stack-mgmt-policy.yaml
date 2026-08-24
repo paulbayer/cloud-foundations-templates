@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Organizations Security Hub Policy - Enable Security Hub across organization'
+
+Metadata:
+  DeploymentTarget: "Management"
+  DeploymentType: "Stack"
+  DeploymentOrder: 6
+  Prerequisites:
+    - "AWS Control Tower deployed"
+    - "Organizations policy type SECURITYHUB_POLICY must be enabled"
+  Comment: |
+    This template uses AWS Organizations Security Hub Policies to enable Security Hub
+    across the organization. This is a simpler, policy-based approach compared to
+    delegated administrator model.
+    
+    Key Features:
+    - Automatically enables Security Hub in specified regions
+    - No need to pre-enable Security Hub manually
+    - Policy-based control at Organizations level
+    - Supports ALL_SUPPORTED for automatic new region enablement
+    
+    Prerequisites:
+    - AWS Control Tower deployed (provides AWS Config)
+    - Organizations policy type SECURITYHUB_POLICY must be enabled
+    - Deploy to: Management Account
+    
+    Note: This policy only controls Security Hub enablement and regions.
+    For standards configuration (CIS, AFSBP, etc.), use Configuration Policies separately.
+    
+    Reference: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_security_hub.html
+
+Parameters:
+  uRootOuId:
+    Type: String
+    Description: Root OU ID to attach the policy to (e.g., r-xxxx)
+    AllowedPattern: '^r-[0-9a-z]{4,32}$'
+    ConstraintDescription: Must be a valid root OU ID
+
+  tEnableAllRegions:
+    Type: String
+    Description: Enable Security Hub in all current and future regions
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  tSpecificRegions:
+    Type: CommaDelimitedList
+    Description: Specific regions to enable (only used if EnableAllRegions is false)
+    Default: 'us-east-1,us-west-2,eu-west-1'
+
+  tDisabledRegions:
+    Type: CommaDelimitedList
+    Description: Regions to explicitly disable (takes precedence over enable list)
+    Default: ''
+
+  tPolicyName:
+    Type: String
+    Description: Name for the Security Hub policy
+    Default: 'SecurityHubEnablementPolicy'
+    MinLength: 1
+    MaxLength: 128
+
+  tPolicyDescription:
+    Type: String
+    Description: Description for the Security Hub policy
+    Default: 'Enables Security Hub across organization accounts and regions'
+    MaxLength: 512
+
+Conditions:
+  EnableAllRegions: !Equals [!Ref tEnableAllRegions, 'true']
+  HasDisabledRegions: !Not [!Equals [!Join ['', !Ref tDisabledRegions], '']]
+
+Resources:
+  # Lambda role for enabling policy type
+  PolicyTypeEnablerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EnableSecurityHubPolicyType
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:EnablePolicyType
+                  - organizations:DescribeOrganization
+                  - organizations:ListRoots
+                Resource: '*'
+
+  # Lambda function to enable SECURITYHUB_POLICY type
+  PolicyTypeEnablerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt PolicyTypeEnablerRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          def handler(event, context):
+              try:
+                  logger.info(f'Event: {event}')
+                  
+                  if event['RequestType'] == 'Delete':
+                      # Don't disable the policy type on delete
+                      logger.info('Delete request - no action needed')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  org_client = boto3.client('organizations')
+                  root_id = event['ResourceProperties']['RootId']
+                  
+                  # Check if SECURITYHUB_POLICY is already enabled
+                  try:
+                      org = org_client.describe_organization()
+                      available_types = org['Organization'].get('AvailablePolicyTypes', [])
+                      
+                      securityhub_policy = next(
+                          (pt for pt in available_types if pt['Type'] == 'SECURITYHUB_POLICY'),
+                          None
+                      )
+                      
+                      if securityhub_policy and securityhub_policy['Status'] == 'ENABLED':
+                          logger.info('SECURITYHUB_POLICY already enabled')
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, 
+                                          {'Status': 'AlreadyEnabled'})
+                          return
+                      
+                      # Enable the policy type
+                      logger.info('Enabling SECURITYHUB_POLICY type')
+                      org_client.enable_policy_type(
+                          RootId=root_id,
+                          PolicyType='SECURITYHUB_POLICY'
+                      )
+                      
+                      logger.info('SECURITYHUB_POLICY enabled successfully')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, 
+                                      {'Status': 'Enabled'})
+                      
+                  except org_client.exceptions.PolicyTypeAlreadyEnabledException:
+                      logger.info('SECURITYHUB_POLICY already enabled (caught exception)')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, 
+                                      {'Status': 'AlreadyEnabled'})
+                  except Exception as e:
+                      logger.error(f'Error: {str(e)}')
+                      cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                      {'Error': str(e)})
+                      
+              except Exception as e:
+                  logger.error(f'Unexpected error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                  {'Error': str(e)})
+
+  # Custom resource to enable policy type
+  EnableSecurityHubPolicyType:
+    Type: Custom::EnablePolicyType
+    Properties:
+      ServiceToken: !GetAtt PolicyTypeEnablerFunction.Arn
+      RootId: !Ref uRootOuId
+
+  SecurityHubOrganizationPolicy:
+    DependsOn: EnableSecurityHubPolicyType
+    Type: 'AWS::Organizations::Policy'
+    Properties:
+      Name: !Ref tPolicyName
+      Description: !Ref tPolicyDescription
+      Type: SECURITYHUB_POLICY
+      Content: !If
+        - EnableAllRegions
+        - !If
+          - HasDisabledRegions
+          # Enable all regions except disabled ones
+          - securityhub:
+              enable_in_regions:
+                '@@assign':
+                  - ALL_SUPPORTED
+              disable_in_regions:
+                '@@assign': !Ref tDisabledRegions
+          # Enable all regions with no exceptions
+          - securityhub:
+              enable_in_regions:
+                '@@assign':
+                  - ALL_SUPPORTED
+              disable_in_regions:
+                '@@assign': []
+        # Enable only specific regions
+        - securityhub:
+            enable_in_regions:
+              '@@assign': !Ref tSpecificRegions
+            disable_in_regions:
+              '@@assign': !If
+                - HasDisabledRegions
+                - !Ref tDisabledRegions
+                - []
+      TargetIds:
+        - !Ref uRootOuId
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Purpose
+          Value: SecurityHubEnablement
+
+Outputs:
+  PolicyId:
+    Description: ID of the Security Hub Organizations policy
+    Value: !Ref SecurityHubOrganizationPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-PolicyId'
+
+  PolicyArn:
+    Description: ARN of the Security Hub Organizations policy
+    Value: !GetAtt SecurityHubOrganizationPolicy.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-PolicyArn'
+
+  AttachedToRoot:
+    Description: Root OU ID where policy is attached
+    Value: !Ref uRootOuId
+    Export:
+      Name: !Sub '${AWS::StackName}-RootOuId'

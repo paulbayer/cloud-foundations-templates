@@ -1,0 +1,517 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Workload VPC with conditional IPAM or explicit CIDR allocation - Provides isolated VPC for application workloads"
+
+Parameters:
+  # Deployment Controls
+  tDeployIPAM:
+    Type: String
+    Description: "Whether to use IPAM for CIDR allocation (template-controlled)"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  # IPAM Parameters (used when tDeployIPAM is true)
+  tIPAMNetmaskLength:
+    Type: Number
+    Description: "Netmask length for IPAM allocation (template-controlled, e.g., 24 for /24)"
+    Default: 24
+    MinValue: 16
+    MaxValue: 28
+
+  # User-Provided Parameters (used when tDeployIPAM is false)
+  uWorkloadVpcCidr:
+    Type: String
+    Description: "Explicit CIDR block for Workload VPC (user-provided, required when IPAM disabled, e.g., 10.100.10.0/24)"
+    Default: ""
+    AllowedPattern: "^(|([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2})$"
+    ConstraintDescription: "Must be a valid CIDR block (e.g., 10.100.10.0/24) or empty when IPAM is enabled"
+
+  # VPC Configuration
+  tAvailabilityZones:
+    Type: Number
+    Description: "Number of Availability Zones to use (template-controlled)"
+    Default: 2
+    MinValue: 2
+    MaxValue: 3
+
+  tEnableNatGateways:
+    Type: String
+    Description: "Enable NAT Gateways for private subnet internet access (template-controlled)"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  # Cross-Account Integration
+  uVPCFlowLogsBucketName:
+    Type: String
+    Description: "S3 bucket name for VPC flow logs from Log Archive account (user-provided)"
+    Default: ""
+
+  # Honors the user's vpcFlowLogs.enabled choice (#107): when false, no VPC flow
+  # log is created even if a bucket exists.
+  tEnableVpcFlowLogs:
+    Type: String
+    Description: "Create the VPC flow log for this VPC"
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+  # Transit Gateway Integration
+  tTransitGatewayId:
+    Type: String
+    Description: "Transit Gateway ID for VPC attachment (template-controlled, optional, can be referenced from SSM)"
+    Default: ""
+
+  # Workload Identification
+  tWorkloadName:
+    Type: String
+    Description: "Name identifier for this workload (template-controlled, e.g., app, data, web)"
+    Default: "workload"
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Must contain only lowercase letters, numbers, and hyphens"
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "IPAM Configuration"
+        Parameters:
+          - tDeployIPAM
+          - tIPAMNetmaskLength
+      - Label:
+          default: "Explicit CIDR Configuration"
+        Parameters:
+          - uWorkloadVpcCidr
+      - Label:
+          default: "VPC Configuration"
+        Parameters:
+          - tWorkloadName
+          - tAvailabilityZones
+          - tEnableNatGateways
+      - Label:
+          default: "Network Integration"
+        Parameters:
+          - tTransitGatewayId
+          - uVPCFlowLogsBucketName
+
+Conditions:
+  UseIPAM: !Equals [!Ref tDeployIPAM, "true"]
+  UseExplicitCidr: !Equals [!Ref tDeployIPAM, "false"]
+  HasExplicitCidr: !Not [!Equals [!Ref uWorkloadVpcCidr, ""]]
+  EnableNatGateways: !Equals [!Ref tEnableNatGateways, "true"]
+  HasFlowLogsBucket: !Not [!Equals [!Ref uVPCFlowLogsBucketName, ""]]
+  EnableVpcFlowLogs: !Equals [!Ref tEnableVpcFlowLogs, "true"]
+  CreateVpcFlowLogs: !And
+    - !Condition EnableVpcFlowLogs
+    - !Condition HasFlowLogsBucket
+  HasTransitGateway: !Not [!Equals [!Ref tTransitGatewayId, ""]]
+  Use3AZs: !Equals [!Ref tAvailabilityZones, 3]
+
+Rules:
+  ValidateCidrWhenIPAMDisabled:
+    RuleCondition: !Equals [!Ref tDeployIPAM, "false"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref uWorkloadVpcCidr, ""]]
+        AssertDescription: "uWorkloadVpcCidr must be provided when IPAM is disabled (tDeployIPAM=false)"
+
+Resources:
+  # Workload VPC
+  WorkloadVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      # When IPAM enabled: use IPAM pool for CIDR allocation directly on VPC
+      # When IPAM disabled: use explicit CIDR block
+      CidrBlock: !If 
+        - UseExplicitCidr
+        - !Ref uWorkloadVpcCidr
+        - !Ref "AWS::NoValue"
+      Ipv4IpamPoolId: !If
+        - UseIPAM
+        - !Sub "{{resolve:ssm:/network/ipam/regional-pools/${AWS::Region}}}"
+        - !Ref "AWS::NoValue"
+      Ipv4NetmaskLength: !If
+        - UseIPAM
+        - !Ref tIPAMNetmaskLength
+        - !Ref "AWS::NoValue"
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "vpc-${AWS::Region}-${tWorkloadName}-001"
+        - Key: Purpose
+          Value: "Workload"
+        - Key: WorkloadName
+          Value: !Ref tWorkloadName
+
+  # VPC Flow Logs (conditional on bucket availability)
+  VpcFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Condition: CreateVpcFlowLogs
+    Properties:
+      LogDestination: !Sub "arn:aws:s3:::${uVPCFlowLogsBucketName}/workload/${tWorkloadName}/"
+      LogDestinationType: s3
+      ResourceId: !Ref WorkloadVpc
+      ResourceType: VPC
+      TrafficType: ALL
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName}-VPC-FlowLogs"
+
+  # Internet Gateway (for public subnets)
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName}-IGW"
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnets
+  PublicSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Select [0, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Public Subnet AZ 1"
+        - Key: Type
+          Value: "Public"
+
+  PublicSubnetAz2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Select [1, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Public Subnet AZ 2"
+        - Key: Type
+          Value: "Public"
+
+  PublicSubnetAz3:
+    Type: AWS::EC2::Subnet
+    Condition: Use3AZs
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Select [2, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Public Subnet AZ 3"
+        - Key: Type
+          Value: "Public"
+
+  # Private Subnets
+  PrivateSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [3, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Private Subnet AZ 1"
+        - Key: Type
+          Value: "Private"
+
+  PrivateSubnetAz2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [4, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Private Subnet AZ 2"
+        - Key: Type
+          Value: "Private"
+
+  PrivateSubnetAz3:
+    Type: AWS::EC2::Subnet
+    Condition: Use3AZs
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [5, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Private Subnet AZ 3"
+        - Key: Type
+          Value: "Private"
+
+  # NAT Gateways (for private subnet internet access)
+  NatGatewayEIPAz1:
+    Type: AWS::EC2::EIP
+    Condition: EnableNatGateways
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName}-NAT-AZ1-EIP"
+
+  NatGatewayAz1:
+    Type: AWS::EC2::NatGateway
+    Condition: EnableNatGateways
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIPAz1.AllocationId
+      SubnetId: !Ref PublicSubnetAz1
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName}-NAT-AZ1"
+
+  NatGatewayEIPAz2:
+    Type: AWS::EC2::EIP
+    Condition: EnableNatGateways
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName}-NAT-AZ2-EIP"
+
+  NatGatewayAz2:
+    Type: AWS::EC2::NatGateway
+    Condition: EnableNatGateways
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIPAz2.AllocationId
+      SubnetId: !Ref PublicSubnetAz2
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName}-NAT-AZ2"
+
+  # Route Tables - Public
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Public Route Table"
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetAz1RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAz1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetAz2RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAz2
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetAz3RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: Use3AZs
+    Properties:
+      SubnetId: !Ref PublicSubnetAz3
+      RouteTableId: !Ref PublicRouteTable
+
+  # Route Tables - Private AZ1
+  PrivateRouteTableAz1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Private Route Table AZ1"
+
+  PrivateRouteAz1:
+    Type: AWS::EC2::Route
+    Condition: EnableNatGateways
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAz1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayAz1
+
+  PrivateSubnetAz1RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAz1
+      RouteTableId: !Ref PrivateRouteTableAz1
+
+  # Route Tables - Private AZ2
+  PrivateRouteTableAz2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Private Route Table AZ2"
+
+  PrivateRouteAz2:
+    Type: AWS::EC2::Route
+    Condition: EnableNatGateways
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAz2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayAz2
+
+  PrivateSubnetAz2RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAz2
+      RouteTableId: !Ref PrivateRouteTableAz2
+
+  # Route Tables - Private AZ3 (conditional)
+  PrivateRouteTableAz3:
+    Type: AWS::EC2::RouteTable
+    Condition: Use3AZs
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName} Private Route Table AZ3"
+
+  PrivateSubnetAz3RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: Use3AZs
+    Properties:
+      SubnetId: !Ref PrivateSubnetAz3
+      RouteTableId: !Ref PrivateRouteTableAz3
+
+  # Transit Gateway Attachment (optional)
+  TransitGatewayAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Condition: HasTransitGateway
+    Properties:
+      TransitGatewayId: !Ref tTransitGatewayId
+      VpcId: !Ref WorkloadVpc
+      SubnetIds:
+        - !Ref PrivateSubnetAz1
+        - !Ref PrivateSubnetAz2
+        - !If [Use3AZs, !Ref PrivateSubnetAz3, !Ref "AWS::NoValue"]
+      Tags:
+        - Key: Name
+          Value: !Sub "${tWorkloadName}-TGW-Attachment"
+
+  # SSM Parameters for cross-stack references
+  WorkloadVPCIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/network/workload-vpc/${tWorkloadName}/id"
+      Type: String
+      Value: !Ref WorkloadVpc
+      Description: !Sub "${tWorkloadName} Workload VPC ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  WorkloadVPCCidrSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/network/workload-vpc/${tWorkloadName}/cidr"
+      Type: String
+      Value: !GetAtt WorkloadVpc.CidrBlock
+      Description: !Sub "${tWorkloadName} Workload VPC CIDR block"
+      Tags:
+        Purpose: "CrossStackReference"
+
+Outputs:
+  VpcId:
+    Description: "Workload VPC ID"
+    Value: !Ref WorkloadVpc
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+
+  VpcCidr:
+    Description: "Workload VPC CIDR block"
+    Value: !GetAtt WorkloadVpc.CidrBlock
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcCidr"
+
+  PublicSubnetAz1Id:
+    Description: "Public Subnet AZ 1 ID"
+    Value: !Ref PublicSubnetAz1
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetAz1-ID"
+
+  PublicSubnetAz2Id:
+    Description: "Public Subnet AZ 2 ID"
+    Value: !Ref PublicSubnetAz2
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetAz2-ID"
+
+  PublicSubnetAz3Id:
+    Condition: Use3AZs
+    Description: "Public Subnet AZ 3 ID"
+    Value: !Ref PublicSubnetAz3
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetAz3-ID"
+
+  PrivateSubnetAz1Id:
+    Description: "Private Subnet AZ 1 ID"
+    Value: !Ref PrivateSubnetAz1
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetAz1-ID"
+
+  PrivateSubnetAz2Id:
+    Description: "Private Subnet AZ 2 ID"
+    Value: !Ref PrivateSubnetAz2
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetAz2-ID"
+
+  PrivateSubnetAz3Id:
+    Condition: Use3AZs
+    Description: "Private Subnet AZ 3 ID"
+    Value: !Ref PrivateSubnetAz3
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetAz3-ID"
+
+  InternetGatewayId:
+    Description: "Internet Gateway ID"
+    Value: !Ref InternetGateway
+    Export:
+      Name: !Sub "${AWS::StackName}-InternetGateway-ID"
+
+  NatGatewayAz1Id:
+    Condition: EnableNatGateways
+    Description: "NAT Gateway AZ 1 ID"
+    Value: !Ref NatGatewayAz1
+    Export:
+      Name: !Sub "${AWS::StackName}-NatGatewayAz1-ID"
+
+  NatGatewayAz2Id:
+    Condition: EnableNatGateways
+    Description: "NAT Gateway AZ 2 ID"
+    Value: !Ref NatGatewayAz2
+    Export:
+      Name: !Sub "${AWS::StackName}-NatGatewayAz2-ID"
+
+  TransitGatewayAttachmentId:
+    Condition: HasTransitGateway
+    Description: "Transit Gateway Attachment ID"
+    Value: !Ref TransitGatewayAttachment
+    Export:
+      Name: !Sub "${AWS::StackName}-TGW-Attachment-ID"
+
+  AllocationMethod:
+    Description: "CIDR allocation method used (IPAM or Explicit)"
+    Value: !If [UseIPAM, "IPAM", "Explicit"]
+    Export:
+      Name: !Sub "${AWS::StackName}-AllocationMethod"
+
+  WorkloadName:
+    Description: "Workload identifier name"
+    Value: !Ref tWorkloadName
+    Export:
+      Name: !Sub "${AWS::StackName}-WorkloadName"

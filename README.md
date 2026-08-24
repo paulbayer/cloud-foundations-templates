@@ -13,6 +13,13 @@ Cloud Foundations (CF) is an initiative that offers a guided path to assist cust
 
 The Cloud Foundations on AWS template library provides *infrastructure as code* templates, policies, scripts, and other resources that can accelerate establishing your [Cloud Foundation on AWS](https://aws.amazon.com/architecture/cloud-foundations/). The repository is organized by the following topics:
 
+### [Titanium — AI Landing Zone Generator](./titanium/)
+
+The titanium directory is an AI-assisted framework (MCP servers) that runs a guided
+interview, captures your decisions in a single `Titanium.yaml`, and generates the
+CloudFormation to design and deploy a multi-account AWS Landing Zone.
+
+
 ### [Control Tower](./control-tower/)
 
 The [Control Tower](./control-tower/) directory contains various templates, scripts, and infrastructure as code for assisting in setting up and managing your `control tower` environment.

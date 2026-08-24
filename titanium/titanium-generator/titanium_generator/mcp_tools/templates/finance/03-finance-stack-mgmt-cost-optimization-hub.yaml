@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cost Optimization Hub - Enable AWS Cost Optimization Hub at organization level (free tier)'
+
+Metadata:
+  DeploymentTarget: "Management"
+  DeploymentType: "Stack"
+  DeploymentOrder: 3
+  Prerequisites:
+    - "AWS Organizations enabled with all features"
+  Comment: |
+    Enables AWS Cost Optimization Hub across the organization using a Lambda-backed
+    Custom Resource. There is no native CloudFormation resource for this setting.
+
+    The Lambda performs two actions in order:
+    1. Enables trusted access for Cost Optimization Hub in AWS Organizations
+       (service principal: cost-optimization-hub.bcm.amazonaws.com)
+    2. Opts in the management account with includeMemberAccounts=True
+
+    The service-linked role (AWSServiceRoleForCostOptimizationHub) is created
+    automatically by AWS when enrollment is activated.
+
+    Cost Optimization Hub aggregates recommendations from Compute Optimizer,
+    Savings Plans, Reserved Instances, rightsizing, and idle resource detection
+    into a single view with estimated savings. Free to use.
+
+    Deploy to: Management account, us-east-1 only (Cost Optimization Hub is a global service with endpoint in us-east-1)
+
+Parameters:
+  tEnableCostOptimizationHub:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable AWS Cost Optimization Hub for the organization'
+
+Resources:
+  rCostOptHubLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'titanium-cost-optimization-hub-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CostOptimizationHubPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cost-optimization-hub:UpdateEnrollmentStatus
+                  - cost-optimization-hub:ListEnrollmentStatuses
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - organizations:EnableAWSServiceAccess
+                  - organizations:DescribeOrganization
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource: 'arn:aws:iam::*:role/aws-service-role/cost-optimization-hub.bcm.amazonaws.com/*'
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName: cost-optimization-hub.bcm.amazonaws.com
+
+  rCostOptHubLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'titanium-cost-optimization-hub-${AWS::Region}'
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt rCostOptHubLambdaRole.Arn
+      Timeout: 120
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+              logger.info(f'Event: {event}')
+              try:
+                  if event['RequestType'] == 'Delete':
+                      logger.info('Delete request - Cost Optimization Hub remains enabled')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  enable = event['ResourceProperties']['EnableCostOptimizationHub'].lower() == 'true'
+                  orgs = boto3.client('organizations', region_name='us-east-1')
+                  coh = boto3.client('cost-optimization-hub', region_name='us-east-1')
+
+                  if enable:
+                      # Step 1: Enable trusted access for Cost Optimization Hub in Organizations
+                      orgs.enable_aws_service_access(
+                          ServicePrincipal='cost-optimization-hub.bcm.amazonaws.com'
+                      )
+                      logger.info('Trusted access enabled for Cost Optimization Hub')
+
+                      # Step 2: Opt in with member accounts (SLR created automatically)
+                      response = coh.update_enrollment_status(
+                          status='Active',
+                          includeMemberAccounts=True
+                      )
+                      logger.info(f'Enrollment updated: {response}')
+
+                      # Verify
+                      statuses = coh.list_enrollment_statuses()
+                      logger.info(f'Verified enrollment statuses: {statuses.get("items", [])}')
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'Status': 'Active'
+                      })
+                  else:
+                      coh.update_enrollment_status(
+                          status='Inactive',
+                          includeMemberAccounts=False
+                      )
+                      logger.info('Cost Optimization Hub disabled')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'Status': 'Inactive'
+                      })
+
+              except Exception as e:
+                  logger.error(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  rCostOptHubCustomResource:
+    Type: Custom::CostOptimizationHub
+    Properties:
+      ServiceToken: !GetAtt rCostOptHubLambda.Arn
+      EnableCostOptimizationHub: !Ref tEnableCostOptimizationHub
+
+Outputs:
+  CostOptimizationHubEnabled:
+    Description: Whether Cost Optimization Hub is enabled
+    Value: !Ref tEnableCostOptimizationHub
+  CostOptHubLambdaArn:
+    Description: ARN of the Cost Optimization Hub Lambda
+    Value: !GetAtt rCostOptHubLambda.Arn

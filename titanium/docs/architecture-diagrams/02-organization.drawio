@@ -1,0 +1,201 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.5.2 Chrome/142.0.7444.265 Electron/39.6.1 Safari/537.36" version="29.5.2">
+  <diagram id="org-diagram" name="AWS Organizations Structure">
+    <mxGraphModel dx="2066" dy="1240" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;whiteSpace=wrap;" value="AWS Organizations Structure" vertex="1">
+          <mxGeometry height="40" width="500" x="400" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="ou-security" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9900;dashed=0;container=1;verticalAlign=top;fontStyle=1;fontSize=14;" value="Security OU" vertex="1">
+          <mxGeometry height="200" width="380" x="30" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="acct-logarchive" parent="ou-security" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;container=1;verticalAlign=top;fontStyle=1;" value="LogArchive Account" vertex="1">
+          <mxGeometry height="140" width="160" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-s3-logarchive" parent="acct-logarchive" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" value="S3 Log Bucket" vertex="1">
+          <mxGeometry height="48" width="48" x="56" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="acct-audit" parent="ou-security" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;container=1;verticalAlign=top;fontStyle=1;" value="Audit Account" vertex="1">
+          <mxGeometry height="140" width="160" x="200" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-guardduty" parent="acct-audit" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.guardduty;" value="GuardDuty" vertex="1">
+          <mxGeometry height="48" width="48" x="15" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-securityhub" parent="acct-audit" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.security_hub;" value="Security Hub" vertex="1">
+          <mxGeometry height="48" width="48" x="95" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ou-infrastructure" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9900;dashed=0;container=1;verticalAlign=top;fontStyle=1;fontSize=14;" value="Infrastructure OU" vertex="1">
+          <mxGeometry height="200" width="560" x="440" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="acct-sharedservices" parent="ou-infrastructure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;container=1;verticalAlign=top;fontStyle=1;" value="SharedServices Account" vertex="1">
+          <mxGeometry height="140" width="160" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-sso" parent="acct-sharedservices" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.single_sign_on;" value="IAM Identity Center" vertex="1">
+          <mxGeometry height="48" width="48" x="56" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="acct-network" parent="ou-infrastructure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;container=1;verticalAlign=top;fontStyle=1;" value="Network Account" vertex="1">
+          <mxGeometry height="140" width="160" x="200" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-tgw" parent="acct-network" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.transit_gateway;" value="Transit Gateway" vertex="1">
+          <mxGeometry height="48" width="48" x="56" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="acct-monitoring" parent="ou-infrastructure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;container=1;verticalAlign=top;fontStyle=1;" value="Monitoring Account" vertex="1">
+          <mxGeometry height="140" width="160" x="380" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-cloudwatch" parent="acct-monitoring" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch_2;" value="CloudWatch" vertex="1">
+          <mxGeometry height="48" width="48" x="56" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ou-workloads" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9900;dashed=0;container=0;verticalAlign=top;fontStyle=1;fontSize=14;" value="Workloads OU" vertex="1">
+          <mxGeometry height="90" width="300" x="30" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="ou-sandbox" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9900;dashed=0;container=0;verticalAlign=top;fontStyle=1;fontSize=14;" value="Sandbox OU" vertex="1">
+          <mxGeometry height="90" width="300" x="370" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="ou-exceptions" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9900;dashed=0;container=0;verticalAlign=top;fontStyle=1;fontSize=14;" value="Exceptions OU" vertex="1">
+          <mxGeometry height="90" width="300" x="710" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="scp-preventleave" parent="1" style="text;html=1;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;fillColor=#FCE4EC;strokeColor=#C62828;rounded=1;whiteSpace=wrap;" value="SCP: PreventLeaveOrganization" vertex="1">
+          <mxGeometry height="40" width="220" x="1006" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="scp-preventpublics3" parent="1" style="text;html=1;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;fillColor=#FCE4EC;strokeColor=#C62828;rounded=1;whiteSpace=wrap;" value="SCP: PreventPublicS3" vertex="1">
+          <mxGeometry height="40" width="220" x="1006" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="policy-requiredtags" parent="1" style="text;html=1;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;fillColor=#E8EAF6;strokeColor=#283593;rounded=1;whiteSpace=wrap;" value="Tagging Policy: RequiredTags" vertex="1">
+          <mxGeometry height="40" width="220" x="1006" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="policy-dailybackups" parent="1" style="text;html=1;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;fillColor=#E8EAF6;strokeColor=#283593;rounded=1;whiteSpace=wrap;dashed=1;dashPattern=8 8;" value="Backup Policy: DailyBackups" vertex="1">
+          <mxGeometry height="40" width="220" x="1006" y="222" as="geometry" />
+        </mxCell>
+        <mxCell id="label-dailybackups-optional" parent="1" style="text;html=1;fontSize=9;fontStyle=2;align=center;verticalAlign=top;fillColor=none;strokeColor=none;fontColor=#999999;" value="Optional: disabled by default" vertex="1">
+          <mxGeometry height="20" width="180" x="1026" y="264" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-scp-preventleave" edge="1" parent="1" source="scp-preventleave" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#666666;dashed=1;dashPattern=8 8;fontSize=9;fontColor=#666666;entryX=0.997;entryY=0.362;entryDx=0;entryDy=0;entryPerimeter=0;" target="acct-management" value="Attached to Root">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="920" y="135" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-scp-preventpublics3" edge="1" parent="1" source="scp-preventpublics3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#666666;dashed=1;dashPattern=8 8;fontSize=9;fontColor=#666666;entryX=0.99;entryY=0.619;entryDx=0;entryDy=0;entryPerimeter=0;" target="acct-management" value="Attached to Root">
+          <mxGeometry relative="1" x="0.0074" as="geometry">
+            <mxPoint as="offset" />
+            <mxPoint x="920" y="135" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-policy-requiredtags" edge="1" parent="1" source="policy-requiredtags" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#666666;dashed=1;dashPattern=8 8;fontSize=9;fontColor=#666666;entryX=1;entryY=0.838;entryDx=0;entryDy=0;entryPerimeter=0;" target="acct-management" value="Attached to Root">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="920" y="135" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-policy-dailybackups" edge="1" parent="1" source="policy-dailybackups" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#666666;dashed=1;dashPattern=8 8;fontSize=9;fontColor=#666666;entryX=0.8;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" target="ou-workloads" value="Attached to Workloads">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1160" y="510" />
+              <mxPoint x="270" y="510" />
+            </Array>
+            <mxPoint x="1190" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-sso-delegation" edge="1" parent="1" source="icon-sso-mgmt" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#666666;dashed=1;dashPattern=8 8;fontSize=9;fontColor=#666666;" target="icon-sso" value="Delegated Admin">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-root-security" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#232F3E;fontSize=9;fontColor=#232F3E;" target="ou-security" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="650" y="210" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-root-infrastructure" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#232F3E;fontSize=9;fontColor=#232F3E;" target="ou-infrastructure" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="650" y="210" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-root-workloads" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#232F3E;fontSize=9;fontColor=#232F3E;" target="ou-workloads" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="380" y="135" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-root-sandbox" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#232F3E;fontSize=9;fontColor=#232F3E;" target="ou-sandbox" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="420" y="210" />
+            </Array>
+            <mxPoint x="650" y="210" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-root-exceptions" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#232F3E;fontSize=9;fontColor=#232F3E;" target="ou-exceptions" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="650" y="210" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;dashed=0;container=0;verticalAlign=top;fontStyle=1;fontSize=12;" value="Legend" vertex="1">
+          <mxGeometry height="170" width="500" x="390" y="670" as="geometry" />
+        </mxCell>
+        <mxCell id="acct-management" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;container=1;verticalAlign=top;fontStyle=1;" value="Management Account" vertex="1">
+          <mxGeometry height="105" width="300" x="400" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-organizations" parent="acct-management" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.organizations;" value="Organizations" vertex="1">
+          <mxGeometry height="48" width="48" x="20" y="29.166666666666668" as="geometry" />
+        </mxCell>
+        <mxCell id="icon-sso-mgmt" parent="acct-management" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.single_sign_on;" value="IAM Identity Center" vertex="1">
+          <mxGeometry height="48" width="48" x="120" y="29.166666666666668" as="geometry" />
+        </mxCell>
+        <mxCell id="label-workloads" parent="1" style="text;html=1;fontSize=11;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#666666;" value="Workload accounts&#xa;provisioned via Service Catalog" vertex="1">
+          <mxGeometry height="60" width="250" x="55" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="label-sandbox" parent="1" style="text;html=1;fontSize=11;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#666666;" value="Isolated sandbox accounts&#xa;(no TGW connectivity)" vertex="1">
+          <mxGeometry height="60" width="250" x="395" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="label-exceptions" parent="1" style="text;html=1;fontSize=11;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#666666;" value="Accounts requiring&#xa;policy exceptions" vertex="1">
+          <mxGeometry height="60" width="250" x="735" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-solid-border" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;" value="" vertex="1">
+          <mxGeometry height="20" width="30" x="410" y="705" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-solid-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="Solid border: Required component" vertex="1">
+          <mxGeometry height="30" width="250" x="450" y="700" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-dashed-border" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=1;dashPattern=8 8;" value="" vertex="1">
+          <mxGeometry height="20" width="30" x="410" y="735" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-dashed-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="Dashed border: Optional component" vertex="1">
+          <mxGeometry height="30" width="250" x="450" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-solid-arrow" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="────▶" vertex="1">
+          <mxGeometry height="30" width="40" x="410" y="760" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-solid-arrow-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="Solid arrow: OU hierarchy" vertex="1">
+          <mxGeometry height="30" width="250" x="450" y="760" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-dashed-arrow" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="- - -▶" vertex="1">
+          <mxGeometry height="30" width="40" x="410" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-dashed-arrow-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="Dashed arrow: Delegation / policy attachment" vertex="1">
+          <mxGeometry height="30" width="280" x="450" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-ou-color" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9900;dashed=0;" value="" vertex="1">
+          <mxGeometry height="20" width="30" x="710" y="705" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-ou-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="OU boundary" vertex="1">
+          <mxGeometry height="30" width="130" x="750" y="700" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-acct-color" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F4FD;strokeColor=#232F3E;dashed=0;" value="" vertex="1">
+          <mxGeometry height="20" width="30" x="710" y="735" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-acct-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="Account boundary" vertex="1">
+          <mxGeometry height="30" width="130" x="750" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-scp-color" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;dashed=0;" value="" vertex="1">
+          <mxGeometry height="20" width="30" x="710" y="765" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-scp-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="Service Control Policy" vertex="1">
+          <mxGeometry height="30" width="130" x="750" y="760" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-policy-color" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#283593;dashed=0;" value="" vertex="1">
+          <mxGeometry height="20" width="30" x="710" y="795" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-policy-label" parent="1" style="text;html=1;fontSize=11;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;" value="Tagging / Backup policy" vertex="1">
+          <mxGeometry height="30" width="130" x="750" y="790" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

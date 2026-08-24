@@ -1,0 +1,641 @@
+################################################################################
+# 1. GLOBAL CONFIGURATION
+# 
+# This section contains global settings for the landing zone, including home region,
+# enabled regions, management account access role, and other global settings.
+################################################################################
+homeRegion: &HOME_REGION {{ home_region }}
+enabledRegions:
+{%- for region in enabled_regions %}
+  - {{ region }}
+{%- endfor %}
+managementAccountAccessRole: {{ management_account_access_role | default('AWSControlTowerExecution') }}
+
+################################################################################
+# 2. CONTROL TOWER CONFIGURATION
+# 
+# This section contains settings for AWS Control Tower, including landing zone
+# version, logging configuration, and security settings.
+################################################################################
+controlTower:
+  enable: {{ control_tower_enable | default(true) }}
+  landingZone:
+    version: '{{ control_tower_version | default('4.0') }}'
+    logging:
+      controlTowerOrganizationTrail: {{ control_tower_org_trail | default(true) }}
+      loggingBucketRetentionDays: {{ logging_bucket_retention | default(365) }}
+      accessLoggingBucketRetentionDays: {{ access_logging_retention | default(3650) }}
+      organizationTrail: {{ organization_trail | default(true) }}
+    security:
+      enableIdentityCenterAccess: {{ identity_center_access | default(true) }}
+      # @strongly recommended
+      denyRegion: {{ deny_region | default(true) }}
+    network:
+      networkFactoryConfiguration: null 
+
+################################################################################
+# 3. ORGANIZATION CONFIGURATION
+# 
+# This section defines the AWS Organizations structure, including organizational
+# units, service control policies, tagging policies, and backup policies.
+################################################################################
+organization:
+  enable: true
+  organizationalUnits:
+{%- for ou in organizational_units %}
+    - name: {{ ou.name }}
+{%- endfor %}
+  serviceControlPolicies:
+{%- for scp in service_control_policies %}
+    - name: {{ scp.name }}
+      description: {{ scp.description }}
+      policy: {{ scp.policy }}
+      type: {{ scp.type | default('customerManaged') }}
+      deploymentTargets:
+        organizationalUnits:
+{%- for ou in scp.deployment_targets %}
+          - {{ ou }}
+{%- endfor %}
+{%- endfor %}
+  taggingPolicies:
+{%- for policy in tagging_policies %}
+    - name: {{ policy.name }}
+      description: {{ policy.description }}
+      policy: {{ policy.policy }}
+      deploymentTargets:
+        organizationalUnits:
+{%- for ou in policy.deployment_targets %}
+          - {{ ou }}
+{%- endfor %}
+{%- endfor %}
+  backupPolicies:
+{%- for policy in backup_policies %}
+    - name: {{ policy.name }}
+      enable: {{ policy.enable | default(false) }}
+      description: {{ policy.description }}
+      policy: {{ policy.policy }}
+      deploymentTargets:
+        organizationalUnits:
+{%- for ou in policy.deployment_targets %}
+          - {{ ou }}
+{%- endfor %}
+{%- endfor %}
+  resourceControlPolicies: []
+
+################################################################################
+# 4. IDENTITY AND ACCESS CONFIGURATION
+# 
+# This section defines identity and access management settings, including IAM
+# password policy, access analyzer, roles, groups, and users.
+################################################################################
+iamPasswordPolicy:
+  allowUsersToChangePassword: {{ iam_allow_users_change_password | default(true) }}
+  hardExpiry: {{ iam_hard_expiry | default(false) }}
+  requireUppercaseCharacters: {{ iam_require_uppercase | default(true) }}
+  requireLowercaseCharacters: {{ iam_require_lowercase | default(true) }}
+  requireSymbols: {{ iam_require_symbols | default(true) }}
+  requireNumbers: {{ iam_require_numbers | default(true) }}
+  minimumPasswordLength: {{ iam_min_password_length | default(14) }}
+  passwordReusePrevention: {{ iam_password_reuse_prevention | default(24) }}
+  maxPasswordAge: {{ iam_max_password_age | default(90) }}
+accessAnalyzer:
+  # @required
+  externalAccess: {{ access_analyzer_external | default(true) }}
+  unusedAccess: {{ access_analyzer_unused | default(false) }}
+iamIdentityCenter:
+  delegatedAdminAccount: {{ identity_center_admin_account | default('SharedServices') }}
+  mfaConfiguration:
+    mfaRequired: {{ identity_center_mfa_required | default(true) }}
+  enableABAC: {{ identity_center_abac | default(true) }}
+{%- if identity_center_external_provider %}
+  externalProvider:
+    enabled: {{ identity_center_external_provider.enabled | default(true) }}
+    externalProvider: {{ identity_center_external_provider.provider | default('Okta') }}
+    samlIntegration: {{ identity_center_external_provider.saml_integration | default(true) }}
+    SCIMIntegration: {{ identity_center_external_provider.scim_integration | default(true) }}
+{%- endif %}
+{%- if identity_center_common_roles %}
+  commonRoles:
+{%- for role in identity_center_common_roles %}
+    - name: {{ role.name }}
+      description: {{ role.description }}
+      policies:
+{%- for policy in role.policies %}
+        - {{ policy }}
+{%- endfor %}
+      sessionDuration: {{ role.session_duration | default(3600) }}
+{%- endfor %}
+{%- endif %}
+
+################################################################################
+# 5. LOGGING CONFIGURATION
+# 
+# This section defines logging settings for the landing zone, including CloudTrail,
+# Session Manager, CloudWatch Logs, S3 bucket configurations, and VPC Flow Logs.
+################################################################################
+logging:
+  account: {{ logging_account | default('LogArchive') }}
+  cloudtrail:
+    # @required - if controlTowerOrganizationTrail = false, CloudTrail enable
+    # description: a second Management Event trail is typically unnecessary and costs
+    managementEventTrail:
+      enable: {{ cloudtrail_management_enable | default(false) }}
+      organizationTrail: {{ cloudtrail_management_org_trail | default(false) }}
+      organizationTrailSettings:
+        multiRegionTrail: {{ cloudtrail_management_multiregion | default(true) }}
+        globalServiceEvents: {{ cloudtrail_management_global_events | default(true) }}
+        managementEvents: {{ cloudtrail_management_events | default(true) }}
+        sendToCloudWatchLogs: {{ cloudtrail_management_cloudwatch | default(true) }}
+        apiErrorRateInsight: {{ cloudtrail_management_error_insight | default(false) }}
+        apiCallRateInsight: {{ cloudtrail_management_call_insight | default(false) }}
+{%- if cloudtrail_data_events %}
+    dataEventTrail:
+{%- for trail in cloudtrail_data_events %}
+      - name: {{ trail.name }}
+        regions:
+{%- for region in trail.regions %}
+          - {{ region }}
+{%- endfor %}
+        deploymentTargets:
+          organizationalUnits:
+{%- for ou in trail.deployment_targets %}
+            - {{ ou }}
+{%- endfor %}
+        settings:
+          multiRegionTrail: {{ trail.settings.multiregion | default(true) }}
+          globalServiceEvents: {{ trail.settings.global_events | default(true) }}
+          managementEvents: {{ trail.settings.management_events | default(false) }}
+{%- if trail.settings.s3 %}
+          s3:
+{%- for s3_config in trail.settings.s3 %}
+            - resources:
+{%- for resource in s3_config.resources %}
+                - {{ resource }}
+{%- endfor %}
+              selectors:
+{%- for selector in s3_config.selectors %}
+                - readOnly: {{ selector.read_only | default(false) }}
+                  includeManagementEvents: {{ selector.include_management | default(false) }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+          sendToCloudWatchLogs: {{ trail.settings.cloudwatch | default(true) }}
+          apiErrorRateInsight: {{ trail.settings.error_insight | default(false) }}
+          apiCallRateInsight: {{ trail.settings.call_insight | default(false) }}
+{%- endfor %}
+{%- endif %}
+    # @optional
+    # description: if an organization trail is being used, account trails are typically not required
+    accountTrails: []
+  sessionManager:
+    sendToCloudWatchLogs: {{ session_manager_cloudwatch | default(true) }}
+    sendToS3: {{ session_manager_s3 | default(true) }}
+    lifecycleRules:
+      - enabled: {{ session_manager_lifecycle_enabled | default(true) }}
+        abortIncompleteMultipartUpload: {{ session_manager_incomplete_upload | default(7) }}
+        expiration: {{ session_manager_expiration | default(730) }}
+        noncurrentVersionExpiration: {{ session_manager_noncurrent_expiration | default(730) }}
+    attachPolicyToIamRoles:
+{%- for role in session_manager_iam_roles %}
+      - {{ role }}
+{%- endfor %}
+  cloudWatchLogGroupDefaultRetentionWeeks: {{ cloudwatch_default_retention | default(13) }}
+  centralLogBucketsAccount:
+    account:
+      - accountName: {{ central_log_account_name | default('Log Archive') }}
+        logAccountControls: []
+
+vpcFlowLogs:
+  trafficType: {{ vpc_flow_traffic_type | default('ALL') }}
+  accounts: []
+  regions:
+{%- for region in vpc_flow_regions %}
+    - {{ region }}
+{%- endfor %}
+  maxAggregationInterval: {{ vpc_flow_aggregation | default(600) }}
+  destinations:
+{%- for dest in vpc_flow_destinations %}
+    - {{ dest }}
+{%- endfor %}
+  destinationsConfig:
+    cloudWatchLogs:
+      retentionInDays: {{ vpc_flow_retention | default(90) }}
+  defaultFormat: {{ vpc_flow_default_format | default(false) }}
+
+################################################################################
+# 6. SECURITY CONFIGURATION
+# 
+# This section defines security settings for the landing zone, including SNS topics,
+# central security services, AWS Config, and CloudWatch metrics and alarms.
+################################################################################
+snsTopics:
+  deploymentTargets:
+    organizationalUnits:
+{%- for ou in sns_deployment_targets %}
+      - {{ ou }}
+{%- endfor %}
+  topics:
+{%- for topic in sns_topics %}
+    - name: {{ topic.name }}
+      emailAddresses:
+{%- for email in topic.emails %}
+        - {{ email }}
+{%- endfor %}
+{%- endfor %}
+
+centralSecurityServices:
+  delegatedAdminAccount: {{ security_admin_account | default('Audit') }}
+  
+  # Enhanced AWS Config support - moved from root level for new template compatibility
+  awsConfig:
+    enableConfigurationRecorder: {{ config_recorder_enable | default(true) }}
+    enableDeliveryChannel: {{ config_delivery_channel_enable | default(true) }}
+    enableGlobalResourceTypes: {{ config_global_resource_types | default(true) }}  # Maps to IncludeGlobalResourceTypes parameter
+    deliveryChannelFrequency: {{ config_delivery_frequency | default('24hours') }}  # Maps to Frequency parameter (1hour, 3hours, 6hours, 12hours, 24hours)
+    resourceTypes: []  # Used when AllSupported is false
+    ruleSets:
+{%- for rule_set in config_rule_sets %}
+      - deploymentTargets:
+          organizationalUnits:
+{%- for ou in rule_set.deployment_targets %}
+            - {{ ou }}
+{%- endfor %}
+        rules:
+{%- for rule in rule_set.rules %}
+          - name: {{ rule.name }}
+            identifier: {{ rule.identifier }}
+            complianceResourceTypes: []
+{%- endfor %}
+{%- endfor %}
+  
+  # @required
+  ebsDefaultVolumeEncryption:
+    enable: {{ ebs_encryption_enable | default(true) }}
+    excludeRegions: []
+  # @required
+  s3PublicAccessBlock:
+    enable: {{ s3_public_access_block | default(true) }}
+    excludeAccounts: []
+  # @strongly recommended
+  scpRevertChangesConfig:
+    enable: {{ scp_revert_changes | default(true) }}
+    snsTopicName: {{ scp_sns_topic | default('Security') }}
+  # @optional
+  macie:
+    enable: {{ macie_enable | default(false) }}
+    excludeRegions: []
+    policyFindingsPublishingFrequency: {{ macie_findings_frequency | default('FIFTEEN_MINUTES') }}
+    publishSensitiveDataFindings: {{ macie_publish_findings | default(true) }}
+{%- if macie_export_config %}
+    exportConfiguration:
+      enable: {{ macie_export_config.enable | default(true) }}
+      destinationType: {{ macie_export_config.destination | default('S3') }}
+{%- endif %}
+  guardduty:
+    # @required
+    # description: GuardDuty should be enabled unless another threat detection tool is in place.
+    enable: {{ guardduty_enable | default(true) }}
+    excludeRegions: []
+    # @strongly recommended
+    s3Protection:
+      enable: {{ guardduty_s3_protection | default(true) }}
+      excludeRegions: []
+{%- if guardduty_export_config %}
+    exportConfiguration:
+      enable: {{ guardduty_export_config.enable | default(true) }}
+      destinationType: {{ guardduty_export_config.destination | default('S3') }}
+      exportFrequency: {{ guardduty_export_config.frequency | default('FIFTEEN_MINUTES') }}
+{%- endif %}
+  # @optional
+  auditManager:
+    enable: {{ audit_manager_enable | default(true) }}
+    excludeRegions: []
+{%- if audit_manager_reports %}
+    defaultReportsConfiguration:
+      enable: {{ audit_manager_reports.enable | default(true) }}
+      destinationType: {{ audit_manager_reports.destination | default('S3') }}
+{%- endif %}
+{%- if audit_manager_lifecycle %}
+    lifecycleRules:
+      - enabled: {{ audit_manager_lifecycle.enabled | default(true) }}
+        abortIncompleteMultipartUpload: {{ audit_manager_lifecycle.incomplete_upload | default(7) }}
+        expiration: {{ audit_manager_lifecycle.expiration | default(1000) }}
+        noncurrentVersionExpiration: {{ audit_manager_lifecycle.noncurrent_expiration | default(1000) }}
+{%- endif %}
+  # @optional
+  detective:
+    enable: {{ detective_enable | default(true) }}
+    excludeRegions: []
+  # Enhanced Security Hub support with standards auto-mapping for org templates
+  securityHub:
+    # @strongly recommended
+    # description: Security Hub provides several functions.
+    enable: {{ security_hub_enable | default(true) }}
+    regionAggregation: {{ security_hub_aggregation | default(true) }}
+    excludeRegions: []
+    standards:  # Auto-mapped to template parameters for org configuration
+{%- for standard in security_hub_standards %}
+      - name: {{ standard.name }}
+        enable: {{ standard.enable }}    # -> pEnableAFSBPStandard: "true", pEnableCIS12Standard: "false", pEnableCIS14Standard: "false", pEnableNISTStandard: "false", pEnablePCIStandard: "false"
+{%- endfor %}
+
+cloudWatch:
+{%- if cloudwatch_metric_sets %}
+  metricSets:
+{%- for metric_set in cloudwatch_metric_sets %}
+    - regions:
+{%- for region in metric_set.regions %}
+        - {{ region }}
+{%- endfor %}
+      deploymentTargets:
+{%- if metric_set.accounts %}
+        accounts:
+{%- for account in metric_set.accounts %}
+          - {{ account }}
+{%- endfor %}
+{%- endif %}
+{%- if metric_set.organizational_units %}
+        organizationalUnits:
+{%- for ou in metric_set.organizational_units %}
+          - {{ ou }}
+{%- endfor %}
+{%- endif %}
+      metrics:
+{%- for metric in metric_set.metrics %}
+        # {{ metric.description | default('') }}
+        - filterName: {{ metric.filter_name }}
+          logGroupName: {{ metric.log_group_name }}
+          filterPattern: '{{ metric.filter_pattern }}'
+          metricNamespace: {{ metric.metric_namespace }}
+          metricName: {{ metric.metric_name }}
+          metricValue: "{{ metric.metric_value }}"
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+
+{%- if cloudwatch_alarm_sets %}
+  alarmSets:
+{%- for alarm_set in cloudwatch_alarm_sets %}
+    - regions:
+{%- for region in alarm_set.regions %}
+        - {{ region }}
+{%- endfor %}
+      deploymentTargets:
+{%- if alarm_set.accounts %}
+        accounts:
+{%- for account in alarm_set.accounts %}
+          - {{ account }}
+{%- endfor %}
+{%- endif %}
+{%- if alarm_set.organizational_units %}
+        organizationalUnits:
+{%- for ou in alarm_set.organizational_units %}
+          - {{ ou }}
+{%- endfor %}
+{%- endif %}
+      alarms:
+{%- for alarm in alarm_set.alarms %}
+        # {{ alarm.description | default('') }}
+        - alarmName: {{ alarm.alarm_name }}
+          alarmDescription: {{ alarm.alarm_description }}
+          snsTopicName: {{ alarm.sns_topic_name }}
+          metricName: {{ alarm.metric_name }}
+          namespace: {{ alarm.namespace }}
+          comparisonOperator: {{ alarm.comparison_operator }}
+          evaluationPeriods: {{ alarm.evaluation_periods }}
+          period: {{ alarm.period }}
+          statistic: {{ alarm.statistic }}
+          threshold: {{ alarm.threshold }}
+          treatMissingData: {{ alarm.treat_missing_data }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+
+################################################################################
+# 7. ACCOUNTS CONFIGURATION
+# 
+# This section defines the AWS accounts in the organization, including mandatory
+# accounts (Management, LogArchive, Audit) and workload accounts.
+################################################################################
+accounts:
+  mandatoryAccounts:
+    # We recommend you do not change mandatory account names. These are used within Landing Zone Accelerator to reference the accounts from other config files.
+    # The "name" value does not currently support spaces
+    # The "name" value DOES NOT need to match the account name
+    - name: Management
+      description: The management (primary) account. Do not change the name field for this mandatory account. The account name key does not need to match the AWS account name.
+      email: {{ management_account_email }}
+      organizationalUnit: Root
+    - name: LogArchive
+      description: The log archive account. Do not change the name field for this mandatory account. The account name key does not need to match the AWS account name.
+      email: {{ log_archive_account_email }}
+      organizationalUnit: Security
+    - name: Audit
+      description: The security audit account (also referred to as the audit account). Do not change the name field for this mandatory account. The account name key does not need to match the AWS account name.
+      email: {{ audit_account_email }}
+      organizationalUnit: Security
+{%- if infrastructure_accounts %}
+  infrastructureAccounts:
+    # The "name" will be used to set the AWS Account name
+    # The "name" value does not currently support spaces
+    # The "name" value DOES NOT need to match the account name
+{%- for account in infrastructure_accounts %}
+    - name: {{ account.name }}
+      description: {{ account.description }}
+      email: {{ account.email }}
+      organizationalUnit: {{ account.organizational_unit }}
+{%- endfor %}
+{%- endif %}
+
+################################################################################
+# 8. NETWORK CONFIGURATION
+# 
+# This section defines high-level network architecture settings for the landing zone,
+# focusing on architectural decisions rather than implementation details.
+################################################################################
+network:
+  # High-level network architecture type
+  architectureType: {{ network_architecture_type | default('TGW') }}  # Options: TGW, CloudWan, SharedVPC, Hybrid
+  
+  # Default VPC handling
+  defaultVpc:
+    delete: {{ default_vpc_delete | default(true) }}
+    excludeAccounts: []
+  
+  # Standard network architecture parameters
+  standardArchitecture:
+    centralizedNetworking: {{ centralized_networking | default(true) }}
+    networkAccount: {{ network_account | default('Network') }}
+    region: *HOME_REGION
+    
+    # High-level VPC structure
+    vpcs:
+{%- if network_endpoint_vpc and network_endpoint_vpc.enabled %}
+      endpointVpc:
+        enabled: {{ network_endpoint_vpc.enabled | default(false) }}
+        availabilityZones: {{ network_endpoint_vpc.availability_zones | default(2) }}
+        subnetsPerAZ: {{ network_endpoint_vpc.subnets_per_az | default(2) }}
+        centralEndpoints: {{ network_endpoint_vpc.central_endpoints | default(false) }}
+        requiredEndpoints:
+{%- for endpoint in network_endpoint_vpc.required_endpoints %}
+          - {{ endpoint }}
+{%- endfor %}
+{%- endif %}
+        
+{%- if network_inspection_vpc and network_inspection_vpc.enabled %}
+      inspectionVpc:
+        enabled: {{ network_inspection_vpc.enabled | default(false) }}
+        availabilityZones: {{ network_inspection_vpc.availability_zones | default(2) }}
+        subnetsPerAZ: {{ network_inspection_vpc.subnets_per_az | default(3) }}
+        networkFirewall: {{ network_inspection_vpc.network_firewall | default(true) }}
+        firewallPolicy: {{ network_inspection_vpc.firewall_policy | default('NetworkFirewallPolicy') }}
+{%- endif %}
+        
+{%- if network_workload_vpcs %}
+      workloadVpcs:
+        enabled: {{ network_workload_vpcs.enabled | default(true) }}
+        availabilityZones: {{ network_workload_vpcs.availability_zones | default(2) }}
+        subnetsPerAZ: {{ network_workload_vpcs.subnets_per_az | default(2) }}  # App + TGW attachment subnets
+        deploymentTargets:
+{%- if network_workload_vpcs.deployment_targets.organizational_units %}
+          organizational_units: 
+{%- for ou in network_workload_vpcs.deployment_targets.organizational_units %}
+            - {{ ou }}
+{%- endfor %}
+{%- endif %}
+{%- if network_workload_vpcs.deployment_targets.accounts %}
+          accounts:
+{%- for account in network_workload_vpcs.deployment_targets.accounts %}
+            - {{ account }}
+{%- endfor %}
+{%- endif %}
+{%- endif %}
+
+    # Connectivity options
+    connectivity:
+{%- if network_transit_gateway %}
+      transitGateway:
+        enabled: {{ network_transit_gateway.enabled | default(true) }}
+        routeTableStructure: {{ network_transit_gateway.route_table_structure | default('segregated') }}  # Options: flat, segregated
+        routeTables:
+{%- for route_table in network_transit_gateway.route_tables %}
+          - {{ route_table }}
+{%- endfor %}
+{%- endif %}
+      
+{%- if network_hybrid_connectivity %}
+      hybridConnectivity:
+        enabled: {{ network_hybrid_connectivity.enabled | default(true) }}
+        type: {{ network_hybrid_connectivity.type | default('DirectConnect') }}  # Options: DirectConnect, VPN
+{%- endif %}
+        
+      route53Resolver:
+        enabled: {{ route53_resolver_enabled | default(true) }}
+        outboundDomains:
+{%- for domain in route53_resolver_outbound_domains %}
+          - {{ domain }}
+{%- endfor %}
+        onPremDnsServers:
+{%- for server in route53_resolver_on_prem_dns_servers %}
+          - {{ server }}
+{%- endfor %}
+        allowedSourceCidrs:
+{%- for cidr in route53_resolver_allowed_source_cidrs %}
+          - {{ cidr }}
+{%- endfor %}
+
+  # IPAM Configuration for centralized IP address management
+  ipam:
+    enabled: {{ ipam_enabled | default(true) }}
+    region: *HOME_REGION
+    operatingRegions:
+{%- for region in ipam_operating_regions %}
+      - {{ region }}
+{%- endfor %}
+    
+    # Global and Regional Pools
+    pools:
+{%- for pool in ipam_pools %}
+      - name: {{ pool.name }}
+        description: {{ pool.description }}
+{%- if pool.provisionedCidrs %}
+        provisionedCidrs:
+{%- for cidr in pool.provisionedCidrs %}
+          - {{ cidr }}
+{%- endfor %}
+{%- endif %}
+{%- if pool.locale %}
+        locale: {{ pool.locale }}
+{%- endif %}
+{%- if pool.sourceIpamPool %}
+        sourceIpamPool: {{ pool.sourceIpamPool }}
+{%- endif %}
+{%- if pool.shareTargets %}
+        shareTargets:
+{%- if pool.shareTargets.organizationalUnits %}
+          organizationalUnits:
+{%- for ou in pool.shareTargets.organizationalUnits %}
+            - {{ ou }}
+{%- endfor %}
+{%- endif %}
+{%- if pool.shareTargets.accounts %}
+          accounts:
+{%- for account in pool.shareTargets.accounts %}
+            - {{ account }}
+{%- endfor %}
+{%- endif %}
+{%- endif %}
+{%- endfor %}
+
+################################################################################
+# 9. CLOUD FINANCIAL MANAGEMENT CONFIGURATION
+# 
+# This section defines cost visibility, reporting, allocation, and optimization
+# settings for the landing zone.
+################################################################################
+
+cloudFinancialManagement:
+{%- if budgets %}
+  budgets:
+{%- for budget in budgets %}
+    - deploymentTargets:
+{%- if budget.accounts %}
+        accounts:
+{%- for account in budget.accounts %}
+          - {{ account }}
+{%- endfor %}
+{%- endif %}
+{%- if budget.organizational_units %}
+        organizationalUnits:
+{%- for ou in budget.organizational_units %}
+          - {{ ou }}
+{%- endfor %}
+{%- endif %}
+      name: {{ budget.name }}
+      timeUnit: {{ budget.time_unit | default('MONTHLY') }}
+      type: {{ budget.type | default('COST') }}
+      amount: {{ budget.amount }}
+      includeUpfront: {{ budget.include_upfront | default(true) }}
+      includeTax: {{ budget.include_tax | default(true) }}
+      includeSupport: {{ budget.include_support | default(true) }}
+      includeSubscription: {{ budget.include_subscription | default(true) }}
+      includeRecurring: {{ budget.include_recurring | default(true) }}
+      includeOtherSubscription: {{ budget.include_other_subscription | default(true) }}
+      includeDiscount: {{ budget.include_discount | default(true) }}
+      includeCredit: {{ budget.include_credit | default(false) }}
+      includeRefund: {{ budget.include_refund | default(false) }}
+      useBlended: {{ budget.use_blended | default(false) }}
+      useAmortized: {{ budget.use_amortized | default(false) }}
+      unit: {{ budget.unit | default('USD') }}
+      notifications:
+{%- for notification in budget.notifications %}
+        - type: {{ notification.type | default('ACTUAL') }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+
+  # Cost Optimization Services (free tier)
+  computeOptimizer:
+    enable: {{ compute_optimizer_enable | default(true) }}
+  costOptimizationHub:
+    enable: {{ cost_optimization_hub_enable | default(true) }}

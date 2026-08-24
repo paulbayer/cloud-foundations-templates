@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Configure AWS Config and SNS Notification Forward IAM Roles
+
+Parameters:
+  uConfigRecorderRoleName:
+    Type: String
+    Description: Name of Config recorder role 
+    Default: Management-ConfigRecorderRole
+
+Resources:
+  ConfigRecorderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref uConfigRecorderRoleName
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - config.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWS_ConfigRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess
+
+Outputs:
+  oBaselineConfigRole:
+    Description: Baseline Config Role
+    Value: !GetAtt 'ConfigRecorderRole.Arn'

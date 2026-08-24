@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to Deploy Control Tower
+
+Parameters:
+  uOrganizationRootId:
+    Type: String
+    AllowedPattern: '^r-[0-9a-z]{4,32}$'
+    Description: >-
+      Root ID of the existing AWS Organization (e.g. r-abcd). The organization is
+      a prerequisite for Control Tower and is not created by this template; the
+      hub OU is created under this root. Get it with:
+      aws organizations list-roots --query 'Roots[0].Id' --output text
+
+  uLoggingAccountEmail:
+    Type: String
+    Description: The email Id for centralized logging account
+
+  uLoggingAccountName:
+    Type: String
+    Description: Name for centralized logging account
+
+  uSecurityAccountEmail:
+    Type: String
+    Description: >-
+      Email address for the Audit account. Conventionally named "Audit"; under
+      landing zone 4.0 this single account backs two service integrations -
+      securityRoles and config - so it is not named after either one.
+
+  uSecurityAccountName:
+    Type: String
+    Description: >-
+      Name for the Audit account (conventionally "Audit"). Backs both the
+      securityRoles and config service integrations.
+
+  tVersion:
+    Type: String
+    Default: 4.0
+    Description: The version number of Landing Zone
+
+  tGovernedRegions:
+    Type: CommaDelimitedList
+    Default: us-east-1
+    Description: List of governed regions
+
+  tSecurityOuName:
+    Type: String
+    Default: Security
+    Description: >-
+      Name of the hub OU holding the Control Tower service integration accounts
+      (log archive and Audit). Landing zone 4.0 removed organizationStructure
+      from the manifest, so this OU is created by this template rather than by
+      Control Tower. LZ 4.0 does not mandate the name "Security"; its only
+      structural requirement is that all service integration accounts share one
+      OU directly under root.
+
+  tLoggingBucketRetentionPeriod:
+    Type: Number
+    Description: Retention period for centralized logging bucket in days
+
+  tAccessLoggingBucketRetentionPeriod:
+    Type: Number
+    Description: Retention period for access logging bucket in days
+
+Resources:
+  # The AWS Organization is a prerequisite, not created here. Control Tower
+  # requires a pre-existing organization (management account, all features), so
+  # the org already exists by the time this stack runs; creating it here would
+  # fail on any account that already has one. The organization's Root ID is
+  # supplied via uOrganizationRootId (aws organizations list-roots).
+
+  # Hub OU for the Control Tower service integration accounts.
+  #
+  # Landing zone 4.0 removed organizationStructure from the manifest, so Control
+  # Tower no longer creates this OU. LZ 4.0's single structural requirement is
+  # that all service integration accounts live in the same OU directly under
+  # root, so this OU must exist before the accounts are created.
+  #
+  # The remaining OUs (Sandbox, Infrastructure, Workloads, ...) are created and
+  # baseline-enrolled by organization/01-organizations-stack-mgmt-ous.yaml, which
+  # runs after the landing zone exists.
+  rHubOu:
+    Type: 'AWS::Organizations::OrganizationalUnit'
+    Properties:
+      Name: !Ref tSecurityOuName
+      ParentId: !Ref uOrganizationRootId
+
+  # Both accounts are placed in the hub OU via ParentIds, which makes them depend
+  # on rHubOu; rHubOu in turn is parented on the existing org root
+  # (uOrganizationRootId), so no explicit DependsOn is needed.
+  rLoggingAccount:
+    Type: 'AWS::Organizations::Account'
+    Properties:
+      AccountName: !Ref uLoggingAccountName
+      Email: !Ref uLoggingAccountEmail
+      ParentIds:
+        - !Ref rHubOu
+
+  rSecurityAccount:
+    Type: 'AWS::Organizations::Account'
+    Properties:
+      AccountName: !Ref uSecurityAccountName
+      Email: !Ref uSecurityAccountEmail
+      ParentIds:
+        - !Ref rHubOu
+
+  rAWSControlTowerAdmin:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: AWSControlTowerAdmin
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: controltower.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/service-role/'
+      ManagedPolicyArns:
+        - !Sub >-
+          arn:${AWS::Partition}:iam::aws:policy/service-role/AWSControlTowerServiceRolePolicy
+
+  rAWSControlTowerAdminPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: AWSControlTowerAdminPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 'ec2:DescribeAvailabilityZones'
+            Resource: '*'
+      Roles:
+        - !Ref rAWSControlTowerAdmin
+
+  # Landing Zone 4.0 requires the AWS-managed AWSControlTowerCloudTrailRolePolicy
+  # attached via ManagedPolicyArns; an inline policy is rejected. (#70)
+  rAWSControlTowerCloudTrailRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: AWSControlTowerCloudTrailRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/service-role/'
+      ManagedPolicyArns:
+        - !Sub >-
+          arn:${AWS::Partition}:iam::aws:policy/service-role/AWSControlTowerCloudTrailRolePolicy
+
+  rAWSControlTowerConfigAggregatorRoleForOrganizations:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: AWSControlTowerConfigAggregatorRoleForOrganizations
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/service-role/'
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSConfigRoleForOrganizations
+
+  rAWSControlTowerStackSetRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: AWSControlTowerStackSetRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/service-role/'
+
+  rAWSControlTowerStackSetRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: AWSControlTowerStackSetRolePolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Resource: !Sub 'arn:${AWS::Partition}:iam::*:role/AWSControlTowerExecution'
+            Effect: Allow
+      Roles:
+        - !Ref rAWSControlTowerStackSetRole
+
+  rLandingZone:
+    Type: 'AWS::ControlTower::LandingZone'
+    Properties:
+      Version:
+        Ref: tVersion
+      Tags:
+        - Key: "keyname1"
+          Value: "value1"
+        - Key: "keyname2"
+          Value: "value2"
+      # Landing zone 4.0 manifest.
+      #
+      # Differences from the 3.3 schema:
+      #   - organizationStructure is REMOVED. The 4.0 schema sets
+      #     additionalProperties: false, so supplying it fails validation. The
+      #     hub OU is created by rHubOu above instead.
+      #   - Every service integration block requires an explicit `enabled`
+      #     boolean. The schema provides no defaults.
+      #   - A new `config` block configures the AWS Config integration.
+      Manifest:
+        governedRegions:
+          Ref: tGovernedRegions
+        centralizedLogging:
+          enabled: true
+          accountId: !Ref rLoggingAccount
+          configurations:
+            loggingBucket:
+              retentionDays:
+                Ref: tLoggingBucketRetentionPeriod
+            accessLoggingBucket:
+              retentionDays:
+                Ref: tAccessLoggingBucketRetentionPeriod
+            # kmsKeyArn:
+            #   Ref: KMSKey
+        # AWS Config integration, new in LZ 4.0.
+        #
+        # accountId is the Config integration account - the Audit account, NOT
+        # the log archive account. Under LZ 4.0, Config gets dedicated buckets
+        # in this account and it is configured as the Config delegated
+        # administrator with a service-linked aggregator.
+        config:
+          enabled: true
+          accountId: !Ref rSecurityAccount
+          configurations:
+            loggingBucket:
+              retentionDays:
+                Ref: tLoggingBucketRetentionPeriod
+            accessLoggingBucket:
+              retentionDays:
+                Ref: tAccessLoggingBucketRetentionPeriod
+        securityRoles:
+          enabled: true
+          accountId: !Ref rSecurityAccount
+        accessManagement:
+          enabled: true
+        backup:
+          enabled: false
+
+Outputs:
+  oLogAccountId:
+    Value:
+      Fn::GetAtt: rLoggingAccount.AccountId
+    Export:
+      Name: LogAccountId
+
+  oSecurityAccountId:
+    Value:
+      Fn::GetAtt: rSecurityAccount.AccountId
+    Export:
+      Name: SecurityAccountId

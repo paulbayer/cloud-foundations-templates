@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Access Analyzer - Delegated Administrator Registration'
+
+Metadata:
+  DeploymentTarget: "Management"
+  DeploymentType: "Stack"
+  DeploymentOrder: 10
+  Prerequisites:
+    - "AWS Organizations enabled"
+    - "Audit/Security account created"
+  Comment: |
+    Registers the Audit account as the delegated administrator for IAM Access Analyzer.
+    This must run in the Management account because only the management account can
+    call organizations:RegisterDelegatedAdministrator.
+    
+    Once delegated, the Audit account can create organization-level analyzers
+    (template 11).
+    
+    Deploy to: Management Account (Stack)
+
+Parameters:
+  uSecurityAccountId:
+    Type: String
+    Description: Audit/Security account ID to delegate Access Analyzer administration to
+  uNonce:
+    Type: String
+    Description: Change this value to force re-execution of the custom resource Lambda
+    Default: '1'
+
+Resources:
+  rAccessAnalyzerDelegationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: titanium-accessanalyzer-delegation
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AccessAnalyzerDelegationPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:RegisterDelegatedAdministrator
+                  - organizations:DeregisterDelegatedAdministrator
+                  - organizations:ListDelegatedAdministrators
+                  - organizations:EnableAWSServiceAccess
+                  - organizations:DisableAWSServiceAccess
+                  - organizations:ListAWSServiceAccessForOrganization
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/access-analyzer.amazonaws.com/*'
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName: access-analyzer.amazonaws.com
+
+  rAccessAnalyzerDelegationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: titanium-accessanalyzer-delegation
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt rAccessAnalyzerDelegationLambdaRole.Arn
+      # 300s to allow polling for delegated-admin registration to propagate
+      # before returning, so template 10 does not race it (issue #104).
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+          import time
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          SERVICE_PRINCIPAL = 'access-analyzer.amazonaws.com'
+
+          def handler(event, context):
+              logger.info(f'Event: {event}')
+              try:
+                  org_client = boto3.client('organizations')
+                  account_id = event['ResourceProperties']['SecurityAccountId']
+
+                  if event['RequestType'] == 'Delete':
+                      physical_id = event.get('PhysicalResourceId', '')
+                      # Skip deregistration if this is cleanup of an old-format physical ID
+                      # (log stream based). Only deregister for stable physical IDs.
+                      if not physical_id.startswith('access-analyzer-delegation-'):
+                          logger.info(f'Skipping deregistration for old physical ID: {physical_id}')
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
+                          return
+                      logger.info(f'Deregistering delegated admin: {account_id}')
+                      try:
+                          org_client.deregister_delegated_administrator(
+                              AccountId=account_id,
+                              ServicePrincipal=SERVICE_PRINCIPAL
+                          )
+                          logger.info('Delegated admin deregistered')
+                      except ClientError as e:
+                          if 'AccountNotRegisteredException' in str(e):
+                              logger.info('Account was not registered as delegated admin')
+                          else:
+                              logger.warning(f'Error deregistering: {e}')
+                      physical_id = f'access-analyzer-delegation-{account_id}'
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
+                      return
+
+                  # Enable service access for Access Analyzer
+                  logger.info('Enabling AWS service access for Access Analyzer')
+                  try:
+                      org_client.enable_aws_service_access(
+                          ServicePrincipal=SERVICE_PRINCIPAL
+                      )
+                  except ClientError as e:
+                      if 'already enabled' in str(e).lower():
+                          logger.info('Service access already enabled')
+                      else:
+                          raise
+
+                  # Create Service-Linked Role for Access Analyzer
+                  logger.info('Creating Access Analyzer Service-Linked Role')
+                  iam_client = boto3.client('iam')
+                  try:
+                      iam_client.create_service_linked_role(
+                          AWSServiceName=SERVICE_PRINCIPAL
+                      )
+                      logger.info('Service-Linked Role created, waiting for propagation')
+                      time.sleep(10)
+                  except ClientError as e:
+                      if 'already exists' in str(e).lower() or 'InvalidInput' in str(e):
+                          logger.info('Service-Linked Role already exists')
+                      else:
+                          raise
+
+                  # Check if already delegated
+                  admins = org_client.list_delegated_administrators(
+                      ServicePrincipal=SERVICE_PRINCIPAL
+                  )
+                  existing = [a['Id'] for a in admins.get('DelegatedAdministrators', [])]
+
+                  if account_id in existing:
+                      logger.info(f'Account {account_id} is already delegated admin')
+                  else:
+                      logger.info(f'Registering {account_id} as delegated admin')
+                      org_client.register_delegated_administrator(
+                          AccountId=account_id,
+                          ServicePrincipal=SERVICE_PRINCIPAL
+                      )
+                      # Registration is eventually consistent. Template 10 creates
+                      # the ORGANIZATION analyzer in the Audit account and fails with
+                      # "not a delegated administrator" if it runs before this
+                      # propagates (issue #104). Poll until the account is visible as
+                      # a delegated admin instead of a fixed sleep, so 09 only
+                      # completes once the delegation is actually usable by 10.
+                      for _ in range(30):  # up to ~150s (30 x 5s)
+                          time.sleep(5)
+                          current = org_client.list_delegated_administrators(
+                              ServicePrincipal=SERVICE_PRINCIPAL
+                          )
+                          if account_id in [a['Id'] for a in current.get('DelegatedAdministrators', [])]:
+                              logger.info('Delegated admin registration propagated')
+                              break
+                      else:
+                          logger.warning('Delegated admin not yet visible after wait; '
+                                         'template 10 may need a retry')
+
+                  physical_id = f'access-analyzer-delegation-{account_id}'
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'DelegatedAdminAccountId': account_id
+                  }, physical_id)
+
+              except Exception as e:
+                  logger.error(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  rAccessAnalyzerDelegationCustomResource:
+    Type: Custom::AccessAnalyzerDelegation
+    Properties:
+      ServiceToken: !GetAtt rAccessAnalyzerDelegationLambda.Arn
+      SecurityAccountId: !Ref uSecurityAccountId
+      Nonce: !Ref uNonce
+
+Outputs:
+  AccessAnalyzerDelegationLambdaArn:
+    Description: ARN of the Access Analyzer Delegation Lambda
+    Value: !GetAtt rAccessAnalyzerDelegationLambda.Arn
+  DelegatedAdminAccountId:
+    Description: Account ID registered as Access Analyzer delegated administrator
+    Value: !Ref uSecurityAccountId

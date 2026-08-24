@@ -1,0 +1,285 @@
+# Automation Registry — single source of truth for automation coverage
+# Status values: fully_automated, partially_automated, manual
+# Subsection status values: automated, manual
+#
+# This registry must reflect every section/subsection present in Titanium.yaml.
+# When a section gains template support, update this file — no code changes needed.
+
+version: "1.0"
+
+sections:
+  bootstrap:
+    status: fully_automated
+    automated_percentage: 100
+    subsections:
+      stacksets_role:
+        status: automated
+        description: "CloudFormation StackSets service role"
+      org_integration:
+        status: automated
+        description: "Organizations integration for StackSets"
+
+  organization:
+    status: fully_automated
+    automated_percentage: 100
+    subsections:
+      organizational_units:
+        status: automated
+        description: "OU structure creation"
+      service_control_policies:
+        status: automated
+        description: "SCP creation and attachment"
+      tagging_policies:
+        status: automated
+        description: "Tagging policy creation and attachment"
+      backup_policies:
+        status: automated
+        description: "Backup policy creation and attachment"
+      resource_control_policies:
+        status: automated
+        description: "Resource control policy creation and attachment"
+
+  control_tower:
+    status: fully_automated
+    automated_percentage: 100
+    subsections:
+      landing_zone:
+        status: automated
+        description: "Control Tower landing zone setup"
+
+  security:
+    status: fully_automated
+    automated_percentage: 100
+    subsections:
+      guardduty:
+        status: automated
+        description: "GuardDuty organization enablement"
+      security_hub:
+        status: automated
+        description: "Security Hub with standards"
+      config:
+        status: automated
+        description: "AWS Config recorder and rules"
+      ebs_encryption:
+        status: automated
+        description: "EBS default volume encryption"
+      s3_public_access_block:
+        status: automated
+        description: "S3 account-level public access block"
+      access_analyzer:
+        status: automated
+        description: "IAM Access Analyzer delegation and configuration"
+      macie:
+        status: automated
+        description: "Amazon Macie organization enablement"
+      detective:
+        status: automated
+        description: "Amazon Detective organization enablement"
+      audit_manager:
+        status: automated
+        description: "AWS Audit Manager configuration"
+      sns_topics:
+        status: automated
+        description: "SNS topics for security notifications"
+      cloudwatch_alarms:
+        status: automated
+        description: "CloudWatch metric filters and alarms (CIS benchmarks)"
+      scp_revert_changes:
+        status: automated
+        description: "SCP revert changes configuration"
+
+  network:
+    status: fully_automated
+    automated_percentage: 100
+    subsections:
+      vpc:
+        status: automated
+        description: "VPC creation with subnets"
+      transit_gateway:
+        status: automated
+        description: "Transit Gateway and attachments"
+      network_firewall:
+        status: automated
+        description: "AWS Network Firewall"
+      ipam:
+        status: automated
+        description: "IP Address Management (IPAM) pools and delegation"
+      route53_resolver:
+        status: automated
+        description: "Route 53 Resolver for hybrid DNS"
+      default_vpc:
+        status: automated
+        description: "Default VPC deletion across accounts"
+      endpoint_vpc:
+        status: automated
+        description: "Centralized VPC endpoints"
+      workload_vpcs:
+        status: automated
+        description: "Workload VPC provisioning via StackSets"
+      hybrid_connectivity:
+        status: automated
+        description: "Direct Connect or VPN hybrid connectivity"
+
+  identity:
+    status: partially_automated
+    automated_percentage: 40
+    subsections:
+      iam_password_policy:
+        status: automated
+        description: "IAM password policy StackSet"
+      access_analyzer:
+        status: automated
+        description: "IAM Access Analyzer"
+      identity_center_base:
+        status: manual
+        description: "IAM Identity Center enablement and delegation"
+      sso_federation:
+        status: manual
+        description: "External IdP federation (SAML/SCIM)"
+      permission_sets:
+        status: manual
+        description: "Permission set creation and assignment"
+    manual_step_templates:
+      - title: "Enable and Configure IAM Identity Center"
+        description: "Enable IAM Identity Center and configure delegated administration"
+        why_manual: "IAM Identity Center enablement requires interactive console setup and cannot be fully automated via CloudFormation"
+        console_steps:
+          - "Navigate to IAM Identity Center in the AWS Console"
+          - "Click 'Enable' if not already enabled"
+          - "Go to Settings > Management > Delegated administrator"
+          - "Register the delegated admin account"
+        cli_commands:
+          - "aws sso-admin create-instance"
+          - "aws organizations register-delegated-administrator --account-id {audit_account_id} --service-principal sso.amazonaws.com"
+        config_references:
+          - "iamIdentityCenter.delegatedAdminAccount"
+          - "iamIdentityCenter.mfaConfiguration"
+      - title: "Configure SSO Federation with External Identity Provider"
+        description: "Set up SAML/SCIM federation with the configured external identity provider"
+        why_manual: "External IdP federation requires exchanging metadata between AWS and the identity provider, which is an interactive process"
+        console_steps:
+          - "Navigate to IAM Identity Center > Settings > Identity source"
+          - "Click 'Change identity source' and select 'External identity provider'"
+          - "Download AWS SAML metadata and upload to your IdP"
+          - "Upload IdP SAML metadata to AWS"
+          - "If SCIM is enabled, configure automatic provisioning"
+        cli_commands: []
+        config_references:
+          - "iamIdentityCenter.externalProvider.externalProvider"
+          - "iamIdentityCenter.externalProvider.samlIntegration"
+          - "iamIdentityCenter.externalProvider.SCIMIntegration"
+      - title: "Create Permission Sets and Assignments"
+        description: "Create permission sets for common roles and assign to groups/users"
+        why_manual: "Permission sets require mapping to specific IAM policies and organizational groups that vary per deployment"
+        console_steps:
+          - "Navigate to IAM Identity Center > Permission sets"
+          - "Create permission sets for each common role defined in configuration"
+          - "Assign permission sets to appropriate groups and accounts"
+        cli_commands:
+          - "aws sso-admin create-permission-set --instance-arn {instance_arn} --name {role_name}"
+        config_references:
+          - "iamIdentityCenter.commonRoles"
+
+  logging:
+    status: manual
+    automated_percentage: 0
+    subsections:
+      cloudtrail_management_events:
+        status: manual
+        description: "CloudTrail management event trail configuration"
+      cloudtrail_data_events:
+        status: manual
+        description: "CloudTrail data event trail configuration"
+      session_manager:
+        status: manual
+        description: "Session Manager logging to CloudWatch and S3"
+      cloudwatch_log_retention:
+        status: manual
+        description: "CloudWatch Log Group default retention"
+      central_log_buckets:
+        status: manual
+        description: "Centralized logging S3 bucket configuration"
+      vpc_flow_logs:
+        status: manual
+        description: "VPC Flow Logs to CloudWatch or S3"
+    manual_step_templates:
+      - title: "Configure CloudTrail Data Event Trails"
+        description: "Set up CloudTrail data event trails for S3 and other services"
+        why_manual: "Data event trail configuration requires specifying per-account deployment targets and resource-level selectors that vary per organization"
+        console_steps:
+          - "Navigate to AWS CloudTrail in the management account"
+          - "Create a new trail or modify existing organization trail"
+          - "Configure data event selectors for S3 and other services"
+          - "Set deployment targets for specific OUs"
+        cli_commands:
+          - "aws cloudtrail create-trail --name {trail_name} --s3-bucket-name {bucket_name} --is-organization-trail"
+          - "aws cloudtrail put-event-selectors --trail-name {trail_name} --advanced-event-selectors file://selectors.json"
+        config_references:
+          - "logging.cloudtrail.dataEventTrail"
+          - "logging.account"
+      - title: "Configure Session Manager Logging"
+        description: "Enable Session Manager logging to CloudWatch Logs and S3"
+        why_manual: "Session Manager logging requires IAM role configuration and S3 bucket lifecycle rules that depend on account-specific settings"
+        console_steps:
+          - "Navigate to AWS Systems Manager > Session Manager > Preferences"
+          - "Enable CloudWatch Logs and S3 logging"
+          - "Configure S3 bucket lifecycle rules"
+          - "Attach SSM policy to required IAM roles"
+        cli_commands:
+          - "aws ssm update-document --name SSM-SessionManagerRunShell --content file://session-prefs.json --document-version '$LATEST'"
+        config_references:
+          - "logging.sessionManager"
+      - title: "Configure VPC Flow Logs"
+        description: "Enable VPC Flow Logs across accounts and regions"
+        why_manual: "VPC Flow Logs require per-account CloudWatch Log Group creation and IAM role setup that depends on network architecture"
+        console_steps:
+          - "Navigate to VPC > Flow Logs in each target account"
+          - "Create flow logs for all VPCs with configured traffic type"
+          - "Configure CloudWatch Logs destination with retention"
+        cli_commands:
+          - "aws ec2 create-flow-logs --resource-type VPC --resource-ids {vpc_id} --traffic-type ALL --log-destination-type cloud-watch-logs"
+        config_references:
+          - "vpcFlowLogs"
+
+  accounts:
+    status: manual
+    automated_percentage: 0
+    subsections:
+      mandatory_accounts:
+        status: manual
+        description: "Mandatory account configuration (Management, LogArchive, Audit)"
+      infrastructure_accounts:
+        status: manual
+        description: "Infrastructure account provisioning (SharedServices, Network, Monitoring)"
+      workload_accounts:
+        status: manual
+        description: "Workload account provisioning"
+    manual_step_templates:
+      - title: "Provision Infrastructure Accounts"
+        description: "Create and configure infrastructure accounts defined in the configuration"
+        why_manual: "Account provisioning requires AWS Organizations API calls with email verification and is typically handled by Control Tower Account Factory"
+        console_steps:
+          - "Navigate to AWS Control Tower > Account Factory"
+          - "Create each infrastructure account with the configured name and email"
+          - "Assign accounts to the correct organizational unit"
+          - "Wait for account provisioning to complete"
+        cli_commands:
+          - "aws controltower create-managed-account --account-name {name} --account-email {email} --organizational-unit-id {ou_id}"
+        config_references:
+          - "accounts.mandatoryAccounts"
+          - "accounts.infrastructureAccounts"
+
+  cost_management:
+    status: fully_automated
+    automated_percentage: 100
+    subsections:
+      budgets:
+        status: automated
+        description: "AWS Budgets configuration with notifications"
+      compute_optimizer:
+        status: automated
+        description: "AWS Compute Optimizer organization enablement (free tier)"
+      cost_optimization_hub:
+        status: automated
+        description: "AWS Cost Optimization Hub organization enablement (free tier)"
+    manual_step_templates: []

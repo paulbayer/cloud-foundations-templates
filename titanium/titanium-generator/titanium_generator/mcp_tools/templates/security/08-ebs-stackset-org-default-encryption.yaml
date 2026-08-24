@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EBS Default Volume Encryption - Organization-wide StackSet'
+
+Metadata:
+  DeploymentTarget: "Organization"
+  DeploymentType: "StackSet"
+  DeploymentOrder: 9
+  DeploymentRegions: "ALL_ENABLED"
+  Prerequisites:
+    - "AWS Organizations enabled"
+    - "StackSets with Organizations integration enabled"
+  Comment: |
+    Enables EBS default volume encryption in every account across the organization.
+    Uses a Lambda-backed Custom Resource because there is no native CloudFormation
+    resource type for the EBS encryption-by-default account setting.
+    
+    IMPORTANT: EBS encryption-by-default is a per-region, per-account setting.
+    This StackSet MUST be deployed to ALL enabled regions to ensure full coverage.
+    Deploying to a single region will only protect volumes created in that region.
+    
+    Deploy to: All accounts, all enabled regions (Organization-wide StackSet)
+
+Parameters:
+  uEnableEbsEncryption:
+    Type: String
+    Description: Enable EBS default volume encryption
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+Resources:
+  rEbsEncryptionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'titanium-ebs-default-encryption-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EbsEncryptionPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:EnableEbsEncryptionByDefault
+                  - ec2:DisableEbsEncryptionByDefault
+                  - ec2:GetEbsEncryptionByDefault
+                Resource: '*'
+
+  rEbsEncryptionLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'titanium-ebs-default-encryption-${AWS::Region}'
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt rEbsEncryptionLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+              logger.info(f'Event: {event}')
+              try:
+                  ec2 = boto3.client('ec2')
+
+                  if event['RequestType'] == 'Delete':
+                      logger.info('Delete request - disabling EBS default encryption')
+                      try:
+                          ec2.disable_ebs_encryption_by_default()
+                          logger.info('EBS default encryption disabled')
+                      except Exception as e:
+                          logger.warning(f'Error disabling EBS encryption: {e}')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  enable = event['ResourceProperties']['EnableEbsEncryption'].lower() == 'true'
+
+                  if enable:
+                      response = ec2.enable_ebs_encryption_by_default()
+                      logger.info(f'EBS default encryption enabled: {response}')
+                  else:
+                      response = ec2.disable_ebs_encryption_by_default()
+                      logger.info(f'EBS default encryption disabled: {response}')
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'EbsEncryptionByDefault': str(enable)
+                  })
+
+              except Exception as e:
+                  logger.error(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  rEbsEncryptionCustomResource:
+    Type: Custom::EbsDefaultEncryption
+    Properties:
+      ServiceToken: !GetAtt rEbsEncryptionLambda.Arn
+      EnableEbsEncryption: !Ref uEnableEbsEncryption
+
+Outputs:
+  EbsEncryptionLambdaArn:
+    Description: ARN of the EBS Default Encryption Lambda
+    Value: !GetAtt rEbsEncryptionLambda.Arn
+  EbsEncryptionEnabled:
+    Description: Whether EBS default encryption is enabled
+    Value: !Ref uEnableEbsEncryption

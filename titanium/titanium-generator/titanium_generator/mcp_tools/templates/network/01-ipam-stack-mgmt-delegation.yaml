@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IPAM Delegation - Delegates IPAM administration to the Network Account'
+
+Parameters:
+  # Deployment Control
+  tEnableIPAMDelegation:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Enable delegation of IPAM to Network Account (template-controlled)"
+
+  # Account Targeting
+  uNetworkAccountId:
+    Type: String
+    Description: "Account ID of the Network Account to delegate IPAM administration to (user-provided)"
+    AllowedPattern: "^[0-9]{12}$"
+    ConstraintDescription: "Must be a valid 12-digit AWS Account ID"
+
+Conditions:
+  ShouldDelegate: !Equals [!Ref tEnableIPAMDelegation, "true"]
+
+Resources:
+  # Custom Resource to handle IPAM delegation
+  IPAMDelegation:
+    Type: AWS::CloudFormation::CustomResource
+    Condition: ShouldDelegate
+    Properties:
+      ServiceToken: !GetAtt IPAMDelegationFunction.Arn
+      NetworkAccountId: !Ref uNetworkAccountId
+      Action: "DELEGATE"
+
+  IPAMDelegationFunction:
+    Type: AWS::Lambda::Function
+    Condition: ShouldDelegate
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          
+          def handler(event, context):
+              print(f"Event: {json.dumps(event)}")
+              
+              try:
+                  org_client = boto3.client('organizations')
+                  network_account_id = event['ResourceProperties']['NetworkAccountId']
+                  action = event['ResourceProperties']['Action']
+                  
+                  if event['RequestType'] == 'Delete' or action != 'DELEGATE':
+                      # On delete, deregister the delegated administrator
+                      try:
+                          org_client.deregister_delegated_administrator(
+                              AccountId=network_account_id,
+                              ServicePrincipal='ipam.amazonaws.com'
+                          )
+                          print(f"Successfully removed IPAM delegation from {network_account_id}")
+                      except org_client.exceptions.AccountNotRegisteredException:
+                          print("Account was not registered as delegated administrator")
+                      except Exception as e:
+                          print(f"Error during deregistration: {str(e)}")
+                      
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'Message': 'IPAM delegation removed'
+                      })
+                      return
+                  
+                  # Enable trusted access for IPAM if not already enabled
+                  try:
+                      org_client.enable_aws_service_access(
+                          ServicePrincipal='ipam.amazonaws.com'
+                      )
+                      print("Enabled trusted access for IPAM")
+                  except org_client.exceptions.AWSServiceAccessNotEnabledException:
+                      print("IPAM service access already enabled")
+                  
+                  # Register the network account as delegated administrator
+                  try:
+                      org_client.register_delegated_administrator(
+                          AccountId=network_account_id,
+                          ServicePrincipal='ipam.amazonaws.com'
+                      )
+                      print(f"Successfully delegated IPAM administration to {network_account_id}")
+                  except org_client.exceptions.AccountAlreadyRegisteredException:
+                      print(f"Account {network_account_id} is already registered as IPAM delegated administrator")
+                  
+                  # Verify the delegation
+                  delegated_admins = org_client.list_delegated_administrators(
+                      ServicePrincipal='ipam.amazonaws.com'
+                  )
+                  
+                  is_delegated = any(
+                      admin['Id'] == network_account_id 
+                      for admin in delegated_admins.get('DelegatedAdministrators', [])
+                  )
+                  
+                  if is_delegated:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'NetworkAccountId': network_account_id,
+                          'DelegationStatus': 'SUCCESS',
+                          'Message': f'IPAM successfully delegated to {network_account_id}'
+                      })
+                  else:
+                      raise Exception("Delegation verification failed")
+                      
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Error': str(e)
+                  })
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldDelegate
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IPAMDelegationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:EnableAWSServiceAccess
+                  - organizations:RegisterDelegatedAdministrator
+                  - organizations:DeregisterDelegatedAdministrator
+                  - organizations:ListDelegatedAdministrators
+                  - organizations:ListAWSServiceAccessForOrganization
+                Resource: '*'
+
+Outputs:
+  NetworkAccountId:
+    Condition: ShouldDelegate
+    Description: "Network Account ID with delegated IPAM administration"
+    Value: !Ref uNetworkAccountId
+    Export:
+      Name: !Sub "${AWS::StackName}-IPAMDelegatedAccount"
+
+  DelegationStatus:
+    Condition: ShouldDelegate
+    Description: "IPAM delegation status"
+    Value: !GetAtt IPAMDelegation.DelegationStatus
+    Export:
+      Name: !Sub "${AWS::StackName}-IPAMDelegationStatus"

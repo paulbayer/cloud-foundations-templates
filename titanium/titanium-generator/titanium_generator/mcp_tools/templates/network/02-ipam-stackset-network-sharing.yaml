@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IPAM Configuration and Resource Sharing for Network Account - Creates Global IPAM with one regional pool and shares it with organization'
+
+Parameters:
+  # Deployment Control
+  tDeployIPAM:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Global IPAM and resource sharing (template-controlled)"
+
+  # Account Targeting
+  uManagementAccountId:
+    Type: String
+    Description: "Account ID of the Management Account of the Landing Zone (user-provided)"
+    AllowedPattern: "^[0-9]{12}$"
+    ConstraintDescription: "Must be a valid 12-digit AWS Account ID"
+  
+  uOrganizationId:
+    Type: String
+    Description: "ID of the AWS Organization of the Landing Zone (user-provided, format: o-xxxxxxxxx)"
+    AllowedPattern: "^o-[a-z0-9]{10,32}$"
+    ConstraintDescription: "Must be a valid AWS Organization ID (format: o-xxxxxxxxxx)"
+
+  # IPAM Configuration
+  tIPAMRegion:
+    Type: String
+    Default: "us-west-2"
+    Description: "AWS region where IPAM pool will be created (template-controlled)"
+  
+  tGlobalIPAMPoolCIDR:
+    Type: String
+    Default: "10.218.0.0/18"
+    Description: "CIDR block for the global IPAM pool (template-controlled)"
+    AllowedPattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$
+  
+  tRegionalPoolCIDR:
+    Type: String
+    Default: "10.218.0.0/19"
+    Description: "CIDR block for the regional pool (template-controlled)"
+  
+  # Organization Sharing (not required when sharing with entire organization)
+  uOrganizationalUnitId:
+    Type: String
+    Description: "Leave empty to share with entire organization, or provide OU ID (user-provided, format: ou-xxxx) to share with specific OU only"
+    Default: ""
+
+Conditions:
+  CreateIPAM: !Equals [!Ref tDeployIPAM, "true"]
+  ShareIPAMPools: !Condition CreateIPAM
+
+Resources:
+  # Global IPAM
+  GlobalIPAM:
+    Type: AWS::EC2::IPAM
+    Condition: CreateIPAM
+    Properties:
+      Description: "Global IPAM for Landing Zone network architecture"
+      Tier: "advanced"
+      OperatingRegions:
+        - RegionName: !Ref tIPAMRegion
+      Tags:
+        - Key: Name
+          Value: "ipam-global-landing-zone"
+        - Key: Purpose
+          Value: "LandingZoneNetworking"
+
+  # Global Pool
+  GlobalIPAMPool:
+    Type: AWS::EC2::IPAMPool
+    Condition: CreateIPAM
+    Properties:
+      IpamScopeId: !GetAtt GlobalIPAM.PrivateDefaultScopeId
+      ProvisionedCidrs:
+        - Cidr: !Ref tGlobalIPAMPoolCIDR
+      Description: "Global IPAM pool for all regions"
+      AllocationMaxNetmaskLength: 32
+      AllocationMinNetmaskLength: 0
+      AutoImport: false
+      AddressFamily: "ipv4"
+      Tags:
+        - Key: Name
+          Value: "ipam-pool-global"
+        - Key: Scope
+          Value: "Global"
+
+  # Regional Pool
+  # NOTE: Additional regional pools can be created as needed by duplicating this resource
+  # and updating the Locale and CIDR parameters. Corresponding resource shares should
+  # also be created to share the pools with the appropriate organizational units.
+  RegionalPool:
+    Type: AWS::EC2::IPAMPool
+    Condition: CreateIPAM
+    Properties:
+      IpamScopeId: !GetAtt GlobalIPAM.PrivateDefaultScopeId
+      SourceIpamPoolId: !Ref GlobalIPAMPool
+      Locale: !Ref tIPAMRegion
+      ProvisionedCidrs:
+        - Cidr: !Ref tRegionalPoolCIDR
+      Description: !Sub "Regional IPAM pool for ${tIPAMRegion}"
+      AllocationMaxNetmaskLength: 32
+      AllocationMinNetmaskLength: 0
+      AutoImport: false
+      AddressFamily: "ipv4"
+      Tags:
+        - Key: Name
+          Value: !Sub "ipam-pool-${tIPAMRegion}"
+        - Key: Region
+          Value: !Ref tIPAMRegion
+
+  # Resource Share for Organization
+  # Shares IPAM pools with the entire organization
+  # NOTE: When adding more regional pools, update the ResourceArns list to include
+  # the new pools, or create separate resource shares for different OUs as needed.
+  IPAMResourceShare:
+    Type: AWS::RAM::ResourceShare
+    Condition: ShareIPAMPools
+    Properties:
+      Name: "IPAM Pools Resource Share"
+      AllowExternalPrincipals: false
+      ResourceArns:
+        - !GetAtt RegionalPool.Arn
+      Principals:
+        - !Sub "arn:aws:organizations::${uManagementAccountId}:organization/${uOrganizationId}"
+      Tags:
+        - Key: Purpose
+          Value: "IPAMPoolSharing"
+
+  # SSM Parameter for cross-stack references
+  IPAMPoolSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateIPAM
+    Properties:
+      Name: !Sub "/network/ipam/regional-pools/${tIPAMRegion}"
+      Type: String
+      Value: !Ref RegionalPool
+      Description: !Sub "IPAM Pool ID for ${tIPAMRegion}"
+      Tags:
+        Purpose: "CrossStackReference"
+        Component: "IPAM"
+
+  # Additional SSM Parameters
+  GlobalIPAMIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateIPAM
+    Properties:
+      Name: "/network/ipam/global-ipam-id"
+      Type: String
+      Value: !Ref GlobalIPAM
+      Description: "Global IPAM resource ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  GlobalIPAMPoolIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateIPAM
+    Properties:
+      Name: "/network/ipam/global-pool-id"
+      Type: String
+      Value: !Ref GlobalIPAMPool
+      Description: "Global IPAM Pool resource ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+Outputs:
+  GlobalIPAMId:
+    Condition: CreateIPAM
+    Description: "Global IPAM resource ID"
+    Value: !Ref GlobalIPAM
+    Export:
+      Name: !Sub "${AWS::StackName}-GlobalIPAM-ID"
+
+  GlobalIPAMPoolId:
+    Condition: CreateIPAM
+    Description: "Global IPAM Pool ID"
+    Value: !Ref GlobalIPAMPool
+    Export:
+      Name: !Sub "${AWS::StackName}-GlobalIPAMPool-ID"
+
+  RegionalPoolId:
+    Condition: CreateIPAM
+    Description: "Regional IPAM Pool ID"
+    Value: !Ref RegionalPool
+    Export:
+      Name: !Sub "${AWS::StackName}-RegionalPool-ID"
+
+  IPAMResourceShareId:
+    Condition: ShareIPAMPools
+    Description: "IPAM Resource Share ID"
+    Value: !Ref IPAMResourceShare
+    Export:
+      Name: !Sub "${AWS::StackName}-IPAMResourceShare-ID"

@@ -1,0 +1,570 @@
+################################################################################
+# 1. GLOBAL CONFIGURATION
+# 
+# This section contains global settings for the landing zone, including home region,
+# enabled regions, management account access role, and other global settings.
+################################################################################
+homeRegion: &HOME_REGION us-east-1
+enabledRegions:
+  - *HOME_REGION
+managementAccountAccessRole: AWSControlTowerExecution
+
+################################################################################
+# 2. CONTROL TOWER CONFIGURATION
+# 
+# This section contains settings for AWS Control Tower, including landing zone
+# version, logging configuration, and security settings.
+################################################################################
+controlTower:
+  enable: true
+  landingZone:
+    version: '4.0'
+    logging:
+      controlTowerOrganizationTrail: true
+      loggingBucketRetentionDays: 365
+      accessLoggingBucketRetentionDays: 3650
+      organizationTrail: true
+    security:
+      enableIdentityCenterAccess: true
+      # @strongly recommended
+      denyRegion: true
+    network:
+      networkFactoryConfiguration: null 
+
+################################################################################
+# 3. ORGANIZATION CONFIGURATION
+# 
+# This section defines the AWS Organizations structure, including organizational
+# units, service control policies, tagging policies, and backup policies.
+################################################################################
+organization:
+  enable: true
+  organizationalUnits:
+    - name: Security
+    - name: Infrastructure
+    - name: Workloads
+    - name: Sandbox
+    - name: Exceptions
+  serviceControlPolicies:
+    - name: PreventLeaveOrganization
+      description: Prevents accounts from leaving the organization
+      policy: service-control-policies/prevent-leave-org.json
+      type: customerManaged
+      deploymentTargets:
+        organizationalUnits:
+          # @strongly recommended to attach to all relevant top level OUs and not root to allow for exception process
+          - Root 
+    - name: PreventPublicS3
+      description: Prevents creation of public S3 buckets
+      policy: service-control-policies/prevent-public-s3.json
+      type: customerManaged
+      deploymentTargets:
+        organizationalUnits:
+          # @strongly recommended to attach to all relevant top level OUs and not root to allow for exception process
+          - Root
+  taggingPolicies:
+    - name: RequiredTags
+      description: Enforces required tags on resources
+      policy: tagging-policies/required-tags.json
+      deploymentTargets:
+        organizationalUnits:
+          # @strongly recommended to attach to all relevant top level OUs and not root to allow for exception process
+          - Root
+  backupPolicies:
+    - name: DailyBackups
+      enable: false
+      description: Daily backups with 30-day retention
+      policy: backup-policies/daily-backups.json
+      deploymentTargets:
+        organizationalUnits:
+          - Workloads
+  resourceControlPolicies: []
+
+################################################################################
+# 4. IDENTITY AND ACCESS CONFIGURATION
+# 
+# This section defines identity and access management settings, including IAM
+# password policy, access analyzer, roles, groups, and users.
+################################################################################
+iamPasswordPolicy:
+  allowUsersToChangePassword: true
+  hardExpiry: false
+  requireUppercaseCharacters: true
+  requireLowercaseCharacters: true
+  requireSymbols: true
+  requireNumbers: true
+  minimumPasswordLength: 14
+  passwordReusePrevention: 24
+  maxPasswordAge: 90
+accessAnalyzer:
+  # @required
+  externalAccess: true
+  unusedAccess: false
+iamIdentityCenter:
+  delegatedAdminAccount: SharedServices
+  mfaConfiguration:
+    mfaRequired: true
+  enableABAC: true
+  externalProvider:
+    enabled: true
+    externalProvider: Okta
+    samlIntegration: true
+    SCIMIntegration: true
+  commonRoles:
+    - name: NetworkAdmin
+      description: Network administration role
+      policies:
+        - AmazonVPCFullAccess
+        - AmazonRoute53FullAccess
+      sessionDuration: 3600
+    - name: SecurityAdmin
+      description: Security administration role
+      policies:
+        - SecurityAudit
+        - AmazonGuardDutyFullAccess
+        - AmazonMacieFullAccess
+      sessionDuration: 3600
+
+################################################################################
+# 5. LOGGING CONFIGURATION
+# 
+# This section defines logging settings for the landing zone, including CloudTrail,
+# Session Manager, CloudWatch Logs, S3 bucket configurations, and VPC Flow Logs.
+################################################################################
+logging:
+  account: LogArchive
+  cloudtrail:
+    # @required - if controlTowerOrganizationTrail = false, CloudTrail enable
+    # description: a second Management Event trail is typically unnecessary and costs
+    managementEventTrail:
+      enable: false
+      organizationTrail: false
+      organizationTrailSettings:
+        multiRegionTrail: true
+        globalServiceEvents: true
+        managementEvents: true
+        sendToCloudWatchLogs: true
+        apiErrorRateInsight: false
+        apiCallRateInsight: false
+    dataEventTrail:
+      - name: S3DataEvents
+        regions:
+          - *HOME_REGION
+        deploymentTargets:
+          organizationalUnits:
+            - Security
+            - Infrastructure
+        settings:
+          multiRegionTrail: true
+          globalServiceEvents: true
+          managementEvents: false
+          s3:
+            - resources:
+                - arn:aws:s3:::*
+              selectors:
+                - readOnly: false
+                  includeManagementEvents: false
+          sendToCloudWatchLogs: true
+          apiErrorRateInsight: false
+          apiCallRateInsight: false
+    # @optional
+    # description: if an organization trail is being used, account trails are typically not required
+    accountTrails: []
+  sessionManager:
+    sendToCloudWatchLogs: true
+    sendToS3: true
+    lifecycleRules:
+      - enabled: true
+        abortIncompleteMultipartUpload: 7
+        expiration: 730
+        noncurrentVersionExpiration: 730
+    attachPolicyToIamRoles:
+      - EC2-Default-SSM-AD-Role
+  cloudWatchLogGroupDefaultRetentionWeeks: 13
+  centralLogBucketsAccount:
+    account:
+      - accountName: Log Archive
+        logAccountControls: []
+
+vpcFlowLogs:
+  trafficType: ALL
+  accounts: []
+  regions:
+    - *HOME_REGION
+  maxAggregationInterval: 600
+  destinations:
+    - cloud-watch-logs
+  destinationsConfig:
+    cloudWatchLogs:
+      retentionInDays: 90
+  defaultFormat: false
+
+
+################################################################################
+# 6. SECURITY CONFIGURATION
+# 
+# This section defines security settings for the landing zone, including SNS topics,
+# central security services, AWS Config, and CloudWatch metrics and alarms.
+################################################################################
+snsTopics:
+  deploymentTargets:
+    organizationalUnits:
+      - Root
+  topics:
+    - name: Security
+      emailAddresses:
+        - <security-notifications>@example.com  # UPDATE EMAIL ADDRESS
+centralSecurityServices:
+  delegatedAdminAccount: Audit  # Used for pSecurityAccountId and delegated admin setup
+  
+  # Enhanced AWS Config support - moved from root level for new template compatibility
+  awsConfig:
+    enableConfigurationRecorder: true
+    enableDeliveryChannel: true
+    enableGlobalResourceTypes: true  # Maps to IncludeGlobalResourceTypes parameter
+    deliveryChannelFrequency: "24hours"  # Maps to Frequency parameter (1hour, 3hours, 6hours, 12hours, 24hours)
+    resourceTypes: []  # Used when AllSupported is false
+    ruleSets:
+      - deploymentTargets:
+          organizationalUnits:
+            - Root
+        rules:
+          - name: access-keys-rotated
+            identifier: ACCESS_KEYS_ROTATED
+            complianceResourceTypes: []
+          - name: iam-root-access-key-check
+            identifier: IAM_ROOT_ACCESS_KEY_CHECK
+            complianceResourceTypes: []
+  
+  # @required
+  ebsDefaultVolumeEncryption:
+    enable: true
+    excludeRegions: []
+  # @required
+  s3PublicAccessBlock:
+    enable: true
+    excludeAccounts: []
+  # @strongly recommended
+  scpRevertChangesConfig:
+    enable: true
+    snsTopicName: Security
+  # @optional
+  macie:
+    enable: false
+    excludeRegions: []
+    policyFindingsPublishingFrequency: FIFTEEN_MINUTES
+    publishSensitiveDataFindings: true
+    exportConfiguration:
+      enable: true
+      destinationType: S3
+  guardduty:
+    # @required
+    # description: GuardDuty should be enabled unless another threat detection tool is in place.
+    enable: true
+    excludeRegions: []
+    # @strongly recommended
+    s3Protection:
+      enable: true
+      excludeRegions: []
+    exportConfiguration:
+      enable: true
+      destinationType: S3
+      exportFrequency: FIFTEEN_MINUTES
+  # @optional
+  auditManager:
+    enable: true
+    excludeRegions: []
+    defaultReportsConfiguration:
+      enable: true
+      destinationType: S3
+    lifecycleRules:
+      - enabled: true
+        abortIncompleteMultipartUpload: 7
+        expiration: 1000
+        noncurrentVersionExpiration: 1000
+  # @optional
+  detective:
+    enable: true
+    excludeRegions: []
+  # Enhanced Security Hub support with standards auto-mapping for org templates
+  securityHub:
+    # @strongly recommended
+    # description: Security Hub provides several functions.
+    enable: true
+    regionAggregation: true
+    excludeRegions: []
+    standards:  # Auto-mapped to template parameters for org configuration
+      - name: "AWS Foundational Security Best Practices v1.0.0"
+        enable: true    # -> pEnableAFSBPStandard: "true"
+      - name: "CIS AWS Foundations Benchmark v1.2.0" 
+        enable: false   # -> pEnableCIS12Standard: "false"
+      - name: "CIS AWS Foundations Benchmark v1.4.0"
+        enable: false   # -> pEnableCIS14Standard: "false"
+      - name: "NIST Special Publication 800-53 Revision 5"
+        enable: false   # -> pEnableNISTStandard: "false"
+      - name: "PCI DSS v3.2.1"
+        enable: false   # -> pEnablePCIStandard: "false"
+
+cloudWatch:
+  metricSets:
+    - regions:
+        - *HOME_REGION
+      deploymentTargets:
+        accounts:
+          - Management
+      metrics:
+        # CIS 1.7 – Avoid the use of the "root" account
+        - filterName: RootAccountUsageMetricFilter
+          logGroupName: aws-controltower/CloudTrailLogs
+          filterPattern: '{$.userIdentity.type="Root" && $.userIdentity.invokedBy NOT EXISTS && $.eventType !="AwsServiceEvent"}'
+          metricNamespace: LogMetrics
+          metricName: RootAccountUsage
+          metricValue: "1"
+        # CIS 4.5 – Ensure a log metric filter and alarm exist for CloudTrail configuration changes
+        - filterName: CloudTrailChangesMetricFilter
+          logGroupName: aws-controltower/CloudTrailLogs
+          filterPattern: "{($.eventName=CreateTrail) || ($.eventName=UpdateTrail) || ($.eventName=DeleteTrail) || ($.eventName=StartLogging) || ($.eventName=StopLogging)}"
+          metricNamespace: LogMetrics
+          metricName: CloudTrailChanges
+          metricValue: "1"
+
+  alarmSets:
+    - regions:
+        - *HOME_REGION
+      deploymentTargets:
+        accounts:
+          - Management
+      alarms:
+        # CIS 1.7 – Avoid the use of the "root" account
+        - alarmName: CIS-1.7-RootAccountUsage
+          alarmDescription: Alarm for usage of "root" account
+          snsTopicName: Security
+          metricName: RootAccountUsage
+          namespace: LogMetrics
+          comparisonOperator: GreaterThanOrEqualToThreshold
+          evaluationPeriods: 1
+          period: 300
+          statistic: Sum
+          threshold: 1
+          treatMissingData: notBreaching
+        # CIS 4.5 – Ensure a log metric filter and alarm exist for CloudTrail configuration changes
+        - alarmName: CIS-4.5-CloudTrailChanges
+          alarmDescription: Alarm for CloudTrail configuration changes
+          snsTopicName: Security
+          metricName: CloudTrailChanges
+          namespace: LogMetrics
+          comparisonOperator: GreaterThanOrEqualToThreshold
+          evaluationPeriods: 1
+          period: 300
+          statistic: Sum
+          threshold: 1
+          treatMissingData: notBreaching
+
+
+################################################################################
+# 7. ACCOUNTS CONFIGURATION
+# 
+# This section defines the AWS accounts in the organization, including mandatory
+# accounts (Management, LogArchive, Audit) and workload accounts.
+################################################################################
+accounts:
+  mandatoryAccounts:
+    # We recommend you do not change mandatory account names. These are used within Landing Zone Accelerator to reference the accounts from other config files.
+    # The "name" value does not currently support spaces
+    # The "name" value DOES NOT need to match the account name
+    - name: Management
+      description: The management (primary) account. Do not change the name field for this mandatory account. The account name key does not need to match the AWS account name.
+      email: <management-account>@example.com  # UPDATE EMAIL ADDRESS
+      organizationalUnit: Root
+    - name: LogArchive
+      description: The log archive account. Do not change the name field for this mandatory account. The account name key does not need to match the AWS account name.
+      email: <log-archive>@example.com  # UPDATE EMAIL ADDRESS
+      organizationalUnit: Security
+    - name: Audit
+      description: The security audit account (also referred to as the audit account). Do not change the name field for this mandatory account. The account name key does not need to match the AWS account name.
+      email: <audit>@example.com  # UPDATE EMAIL ADDRESS
+      organizationalUnit: Security
+  infrastructureAccounts:
+    # The "name" will be used to set the AWS Account name
+    # The "name" value does not currently support spaces
+    # The "name" value DOES NOT need to match the account name
+    - name: SharedServices
+      description: The SharedServices account
+      email: <shared-services>@example.com  # UPDATE EMAIL ADDRESS
+      organizationalUnit: Infrastructure
+    - name: Network
+      description: The Network account
+      email: <network>@example.com  # UPDATE EMAIL ADDRESS
+      organizationalUnit: Infrastructure
+    - name: Monitoring
+      description: The Monitoring account for centralized observability
+      email: <monitoring>@example.com  # UPDATE EMAIL ADDRESS
+      organizationalUnit: Infrastructure
+
+################################################################################
+# 8. NETWORK CONFIGURATION
+# 
+# This section defines high-level network architecture settings for the landing zone,
+# focusing on architectural decisions rather than implementation details.
+################################################################################
+network:
+  # High-level network architecture type
+  architectureType: TGW  # Options: TGW, CloudWan, SharedVPC, Hybrid
+  
+  # Default VPC handling
+  defaultVpc:
+    delete: true
+    excludeAccounts: []
+  
+  # TGW-specific network architecture parameters (replaces standardArchitecture)
+  tgwArchitecture:
+    networkAccount: Network
+    region: *HOME_REGION
+    
+    # Centralized infrastructure VPCs (TGW-scoped)
+    vpcs:
+      endpointVpc:
+        enabled: false
+        availabilityZones: 2
+        subnetsPerAZ: 2  # Regular + TGW attachment subnets
+        centralEndpoints: false
+        requiredEndpoints:
+          - ec2
+          - ec2messages
+          - ssm
+          - ssmmessages
+          - kms
+          - logs
+        
+      inspectionVpc:
+        enabled: true
+        availabilityZones: 2
+        subnetsPerAZ: 3  # Regular + TGW attachment + Firewall subnets
+        networkFirewall: true
+        firewallPolicy: NetworkFirewallPolicy
+
+    # Transit Gateway resource config (no enabled flag — architectureType: TGW implies it)
+    transitGateway:
+      name: example-tgw
+      asn: 65000
+      routeTableStructure: segregated  # Options: flat, segregated
+      routeTables:
+        - Core
+        - Segregated
+        - Shared
+        - Standalone
+
+    # TGW-scoped DNS resolver
+    route53Resolver:
+      enabled: true
+      outboundDomains:
+        - corp.example.com
+      onPremDnsServers:
+        - 192.168.0.10
+        - 192.168.0.11
+      allowedSourceCidrs:
+        - 192.168.0.0/16
+
+  # Architecture-independent workload VPCs (moved from tgwArchitecture.vpcs)
+  workloadVpcs:
+    enabled: true
+    availabilityZones: 2
+    subnetsPerAZ: 2  # App + TGW attachment subnets
+    deploymentTargets:
+      organizational_units: 
+        - Workloads
+      accounts: []
+
+  # Architecture-independent hybrid connectivity (DirectConnect/VPN)
+  hybridConnectivity:
+    enabled: true
+    type: DirectConnect  # Options: DirectConnect, VPN
+
+  # IPAM Configuration for centralized IP address management
+  ipam:
+    enabled: true
+    region: *HOME_REGION
+    operatingRegions:
+      - *HOME_REGION
+    
+    # Global and Regional Pools
+    pools:
+      - name: "global-pool"
+        description: "Global IPAM pool for all regions"
+        provisionedCidrs:
+          - "10.218.0.0/18"
+      - name: "regional-pool-{{ homeRegion }}"
+        description: "Regional pool for {{ homeRegion }}"
+        locale: *HOME_REGION
+        sourceIpamPool: "global-pool"
+        provisionedCidrs:
+          - "10.218.0.0/19"
+        shareTargets:
+          organizationalUnits:
+            - Infrastructure
+            - Workloads
+
+################################################################################
+# 9. CLOUD FINANCIAL MANAGEMENT CONFIGURATION
+# 
+# This section defines cost visibility, reporting, allocation, and optimization
+# settings for the landing zone.
+################################################################################
+
+cloudFinancialManagement:
+  # Cost Visibility and Reporting
+  costAndUsageReport:
+    compression: Parquet
+    format: Parquet
+    reportName: accelerator-cur
+    s3Prefix: cur
+    timeUnit: DAILY
+    refreshClosedReports: true
+    reportVersioning: CREATE_NEW_REPORT
+    lifecycleRules:
+      - enabled: true
+        abortIncompleteMultipartUpload: 7
+        expiration: 730
+        noncurrentVersionExpiration: 730
+  primaryCostEvaluationTool: Cost Explorer
+  secondaryCostEvaluationTool: CUDOS
+
+# Cost Allocation
+  costAllocationTags:
+    - key: Environment
+      status: Active
+    - key: CostCenter
+      status: Active
+    - key: Project
+      status: Active
+    - key: Application
+      status: Active
+  budgets:
+    - deploymentTargets:
+        accounts:
+          - Management
+      name: accel-budget
+      timeUnit: MONTHLY
+      type: COST
+      amount: 2000
+      includeUpfront: true
+      includeTax: true
+      includeSupport: true
+      includeSubscription: true
+      includeRecurring: true
+      includeOtherSubscription: true
+      includeDiscount: true
+      includeCredit: false
+      includeRefund: false
+      useBlended: false
+      useAmortized: false
+      unit: USD
+      notifications:
+        - type: ACTUAL
+
+  # Cost Optimization
+  costOptimization:
+    costOptimizationAWSSolutions:
+    - InstanceScheduler: true
+    - InnovationSandbox: true
+    - costOptimizerForAmazonWorkspaces: false

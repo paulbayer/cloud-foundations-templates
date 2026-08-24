@@ -1,0 +1,342 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Enable AWS Organizations integration for CloudFormation StackSets - Modern approach replacing manual role creation'
+
+Metadata:
+  Purpose: 'Bootstrap template for enabling StackSets Organizations integration'
+  Author: 'Titanium Generator'
+  Version: '1.0.0'
+  DeploymentMethod: 'Direct deployment to Management Account only'
+  Dependencies: 'AWS Organizations must be enabled and Control Tower optional'
+
+Parameters:
+  uEnableStackSetsOrganizationsIntegration:
+    Type: String
+    Description: 'Enable trusted access for CloudFormation StackSets with AWS Organizations'
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    ConstraintDescription: 'Must be true or false'
+
+  uEnableAutoDeployment:
+    Type: String
+    Description: 'Automatically deploy StackSet instances to new accounts added to target OUs'
+    Default: 'true'  
+    AllowedValues: ['true', 'false']
+    ConstraintDescription: 'Must be true or false'
+
+  uRetainStacksOnAccountRemoval:
+    Type: String
+    Description: 'Retain stack instances when accounts are removed from target OUs'
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    ConstraintDescription: 'Must be true or false'
+
+  uEnvironment:
+    Type: String
+    Description: 'Environment name for resource tagging'
+    Default: 'production'
+    AllowedValues: ['production', 'staging', 'development', 'test']
+
+Conditions:
+  EnableIntegration: !Equals [!Ref uEnableStackSetsOrganizationsIntegration, 'true']
+  EnableAutoDeploymentCondition: !And
+    - !Condition EnableIntegration
+    - !Equals [!Ref uEnableAutoDeployment, 'true']
+
+Resources:
+  # Lambda role for enabling Organizations service access
+  EnableStackSetsLambdaRole:
+    Type: AWS::IAM::Role
+    Condition: EnableIntegration
+    Properties:
+      RoleName: !Sub 'Titanium-EnableStackSetsIntegration-${uEnvironment}-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StackSetsOrganizationsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:ActivateOrganizationsAccess
+                  - cloudformation:DeactivateOrganizationsAccess
+                  - cloudformation:DescribeOrganizationsAccess
+                  - organizations:ListAWSServiceAccessForOrganization
+                  - organizations:DescribeOrganization
+                  - iam:GetRole
+                  - iam:CreateServiceLinkedRole
+                  - iam:ListRoles
+                Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: 'Enable StackSets Organizations Integration'
+        - Key: Environment
+          Value: !Ref uEnvironment
+        - Key: ManagedBy
+          Value: 'CloudFormation'
+
+  # Lambda function to enable Organizations service access
+  EnableStackSetsLambda:
+    Type: AWS::Lambda::Function
+    Condition: EnableIntegration
+    Properties:
+      FunctionName: !Sub 'Titanium-EnableStackSetsIntegration-${uEnvironment}'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt EnableStackSetsLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+          
+          def lambda_handler(event, context):
+              try:
+                  print(f"Event: {json.dumps(event)}")
+                  
+                  # Use CloudFormation client for StackSets Organizations access
+                  cfn_client = boto3.client('cloudformation')
+                  orgs_client = boto3.client('organizations')
+                  
+                  if event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                      try:
+                          # Activate Organizations access for StackSets using CloudFormation API
+                          print("Activating StackSets Organizations access...")
+                          cfn_client.activate_organizations_access()
+                          print("Successfully activated StackSets Organizations access")
+                          
+                          # Verify it was enabled using CloudFormation DescribeOrganizationsAccess
+                          access_status = cfn_client.describe_organizations_access()
+                          print(f"StackSets Organizations access status: {access_status['Status']}")
+                          
+                          if access_status['Status'] == 'ENABLED':
+                              # Get organization info for response
+                              org_info = orgs_client.describe_organization()
+                              response_data = {
+                                  'Status': 'SUCCESS',
+                                  'ServicePrincipal': 'stacksets.cloudformation.amazonaws.com',
+                                  'OrganizationId': org_info['Organization']['Id'],
+                                  'AccessStatus': access_status['Status'],
+                                  'Message': 'StackSets Organizations integration activated successfully'
+                              }
+                              cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                          else:
+                              cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                             {'Error': f'StackSets Organizations access status is {access_status["Status"]}, expected ENABLED'})
+                              
+                      except Exception as e:
+                          print(f"Error activating Organizations access: {str(e)}")
+                          # Check if it might already be activated
+                          try:
+                              services = orgs_client.list_aws_service_access_for_organization()
+                              stacksets_enabled = any(
+                                  service['ServicePrincipal'] == 'stacksets.cloudformation.amazonaws.com'
+                                  for service in services['EnabledServicePrincipals']
+                              )
+                              if stacksets_enabled:
+                                  print("StackSets Organizations access was already activated")
+                                  org_info = orgs_client.describe_organization()
+                                  response_data = {
+                                      'Status': 'SUCCESS',
+                                      'ServicePrincipal': 'stacksets.cloudformation.amazonaws.com',
+                                      'OrganizationId': org_info['Organization']['Id'],
+                                      'Message': 'StackSets Organizations integration was already activated'
+                                  }
+                                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                              else:
+                                  cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                                 {'Error': f'Failed to activate Organizations access: {str(e)}'})
+                          except Exception as verify_error:
+                              cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                             {'Error': f'Failed to activate and verify Organizations access: {str(e)}, {str(verify_error)}'})
+                                         
+                  elif event['RequestType'] == 'Delete':
+                      # Don't deactivate on delete to avoid breaking existing StackSets
+                      print("Skipping Organizations access deactivation on stack deletion")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      
+              except Exception as e:
+                  print(f"Unexpected error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                 {'Error': f'Unexpected error: {str(e)}'})
+      Tags:
+        - Key: Purpose
+          Value: 'Enable StackSets Organizations Integration'
+        - Key: Environment
+          Value: !Ref uEnvironment
+        - Key: ManagedBy
+          Value: 'CloudFormation'
+
+  # Custom resource to enable Organizations service access
+  StackSetsOrganizationsIntegration:
+    Type: AWS::CloudFormation::CustomResource
+    Condition: EnableIntegration
+    Properties:
+      ServiceToken: !GetAtt EnableStackSetsLambda.Arn
+      ServicePrincipal: 'stacksets.cloudformation.amazonaws.com'
+
+  # Create a custom resource to validate the integration
+  ValidationLambdaRole:
+    Type: AWS::IAM::Role
+    Condition: EnableIntegration
+    Properties:
+      RoleName: !Sub 'Titanium-StackSetsIntegrationValidation-${uEnvironment}-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OrganizationsReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:ListAWSServiceAccessForOrganization
+                  - organizations:DescribeOrganization
+                Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: 'StackSets Organizations Integration Validation'
+        - Key: Environment
+          Value: !Ref uEnvironment
+        - Key: ManagedBy
+          Value: 'CloudFormation'
+
+  ValidationLambda:
+    Type: AWS::Lambda::Function
+    Condition: EnableIntegration
+    Properties:
+      FunctionName: !Sub 'Titanium-StackSetsIntegrationValidation-${uEnvironment}'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt ValidationLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+          
+          def lambda_handler(event, context):
+              try:
+                  print(f"Event: {json.dumps(event)}")
+                  
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  # Validate Organizations integration
+                  orgs_client = boto3.client('organizations')
+                  
+                  # Check if Organizations is available
+                  try:
+                      org_info = orgs_client.describe_organization()
+                      print(f"Organization ID: {org_info['Organization']['Id']}")
+                  except Exception as e:
+                      print(f"Organizations not available: {str(e)}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                     {'Error': 'AWS Organizations is not enabled'})
+                      return
+                  
+                  # Check if StackSets trusted access is enabled
+                  try:
+                      services = orgs_client.list_aws_service_access_for_organization()
+                      stacksets_enabled = any(
+                          service['ServicePrincipal'] == 'stacksets.cloudformation.amazonaws.com'
+                          for service in services['EnabledServicePrincipals']
+                      )
+                      
+                      if stacksets_enabled:
+                          print("StackSets Organizations integration is enabled")
+                          response_data = {
+                              'Status': 'SUCCESS',
+                              'OrganizationId': org_info['Organization']['Id'],
+                              'IntegrationEnabled': 'true',
+                              'Message': 'StackSets Organizations integration validated successfully'
+                          }
+                      else:
+                          print("StackSets Organizations integration is not enabled")
+                          response_data = {
+                              'Status': 'PARTIAL',
+                              'OrganizationId': org_info['Organization']['Id'],
+                              'IntegrationEnabled': 'false',
+                              'Message': 'StackSets trusted access needs to be enabled'
+                          }
+                      
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                      
+                  except Exception as e:
+                      print(f"Error checking StackSets integration: {str(e)}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                     {'Error': f'Failed to validate integration: {str(e)}'})
+                      
+              except Exception as e:
+                  print(f"Unexpected error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                 {'Error': f'Unexpected error: {str(e)}'})
+      Tags:
+        - Key: Purpose
+          Value: 'StackSets Organizations Integration Validation'
+        - Key: Environment
+          Value: !Ref uEnvironment
+        - Key: ManagedBy
+          Value: 'CloudFormation'
+
+  IntegrationValidation:
+    Type: AWS::CloudFormation::CustomResource
+    Condition: EnableIntegration
+    Properties:
+      ServiceToken: !GetAtt ValidationLambda.Arn
+      IntegrationEnabled: !Ref uEnableStackSetsOrganizationsIntegration
+    DependsOn: StackSetsOrganizationsIntegration
+
+Outputs:
+  IntegrationStatus:
+    Description: 'StackSets Organizations integration status'
+    Value: !If [EnableIntegration, 'Enabled', 'Disabled']
+    Export:
+      Name: !Sub '${AWS::StackName}-StackSetsOrgIntegration'
+
+  OrganizationId:
+    Description: 'AWS Organization ID (available when integration is enabled)'
+    Value: !If [EnableIntegration, !GetAtt IntegrationValidation.OrganizationId, 'N/A']
+    Condition: EnableIntegration
+    Export:
+      Name: !Sub '${AWS::StackName}-OrganizationId'
+
+  ValidationStatus:
+    Description: 'Integration validation status'
+    Value: !If [EnableIntegration, !GetAtt IntegrationValidation.Status, 'N/A']
+    Condition: EnableIntegration
+
+  ValidationMessage:
+    Description: 'Integration validation message'
+    Value: !If [EnableIntegration, !GetAtt IntegrationValidation.Message, 'Integration disabled']
+
+  DeploymentGuidance:
+    Description: 'Next steps for StackSet deployment'
+    Value: !If 
+      - EnableIntegration
+      - 'Use --permissions-model SERVICE_MANAGED and --deployment-targets OrganizationalUnitIds=<ou-id> when creating StackSets'
+      - 'Enable integration first, then use service-managed permissions'
+
+  AutoDeploymentConfig:
+    Description: 'Auto-deployment configuration for new accounts'
+    Value: !If
+      - EnableAutoDeploymentCondition
+      - !Sub 'Enabled=true,RetainStacksOnAccountRemoval=${uRetainStacksOnAccountRemoval}'
+      - 'Disabled'

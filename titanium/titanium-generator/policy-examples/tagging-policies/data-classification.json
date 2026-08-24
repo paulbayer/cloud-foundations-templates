@@ -1,0 +1,49 @@
+{
+  "tags": {
+    "DataClassification": {
+      "tag_key": {
+        "@@assign": "DataClassification",
+        "@@operators_allowed_for_child_policies": ["@@none"]
+      },
+      "tag_value": {
+        "@@assign": ["Public", "Internal", "Confidential", "Restricted"],
+        "@@operators_allowed_for_child_policies": ["@@none"]
+      },
+      "enforced_for": {
+        "@@assign": [
+          "s3:bucket",
+          "rds:db",
+          "dynamodb:table",
+          "secretsmanager:secret",
+          "kms:key"
+        ]
+      }
+    },
+    "DataRetention": {
+      "tag_key": {
+        "@@assign": "DataRetention"
+      },
+      "tag_value": {
+        "@@assign": ["30days", "90days", "1year", "3years", "7years", "permanent"]
+      },
+      "enforced_for": {
+        "@@assign": [
+          "s3:bucket",
+          "rds:db",
+          "dynamodb:table"
+        ]
+      }
+    },
+    "ComplianceScope": {
+      "tag_key": {
+        "@@assign": "ComplianceScope"
+      },
+      "tag_value": {
+        "@@assign": ["PCI-DSS", "HIPAA", "SOC2", "GDPR", "None"]
+      },
+      "enforced_for": {
+        "@@assign": ["*"]
+      }
+    }
+  }
+}

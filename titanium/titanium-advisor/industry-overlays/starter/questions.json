@@ -1,0 +1,798 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "industry": "starter",
+    "description": "Starter landing zone configuration for organizations getting started with AWS",
+    "total_questions": 28,
+    "estimated_time_minutes": 15
+  },
+  "sections": [
+    {
+      "id": "basic_info",
+      "name": "Basic Information",
+      "order": 1,
+      "description": "Organization details and AWS region selection",
+      "questions": [
+        {
+          "id": "org_name",
+          "text": "What is your organization's name?",
+          "type": "text",
+          "required": true,
+          "validation": {
+            "min_length": 1,
+            "max_length": 100
+          },
+          "stores_as": "organization_name",
+          "help_text": "This will be used in account names and resource tags"
+        },
+        {
+          "id": "home_region",
+          "text": "Where is your organization primarily based?",
+          "type": "discovery",
+          "required": true,
+          "help_text": "Just tell me your location (city or country) - I'll figure out the best AWS region for you",
+          "stores_as": "home_region",
+          "inference": {
+            "constraint": "aws_region",
+            "hint": "Map user's location to the nearest AWS region that supports Control Tower. Consider: geographic proximity, data residency requirements, and service availability. Common mappings: UK/London \u2192 eu-west-2, Australia/Sydney \u2192 ap-southeast-2, US East Coast \u2192 us-east-1, US West Coast \u2192 us-west-2, Germany/Netherlands \u2192 eu-central-1, Singapore/Southeast Asia \u2192 ap-southeast-1, Japan \u2192 ap-northeast-1, Canada \u2192 ca-central-1",
+            "validation_note": "MUST store a valid AWS region CODE (e.g., eu-west-2, us-east-1, ap-southeast-2). Do the location->region mapping yourself and record ONLY the region code as home_region -- NEVER store the user's raw city/country/phrase. If the location is ambiguous (e.g. 'Washington' = WA state vs Washington DC), ask the user which region. A non-region value is rejected by the generator (issue #110)."
+          },
+          "presentation_template": "Based on your location, I recommend **{{value}}** ({{region_label}}) as your home region. This hosts your Control Tower and centralized services close to your organization for best performance.",
+          "region_labels": {
+            "us-east-1": "US East - N. Virginia",
+            "us-east-2": "US East - Ohio",
+            "us-west-1": "US West - N. California",
+            "us-west-2": "US West - Oregon",
+            "ca-central-1": "Canada - Central",
+            "ca-west-1": "Canada West - Calgary",
+            "eu-west-1": "Europe - Ireland",
+            "eu-west-2": "Europe - London",
+            "eu-west-3": "Europe - Paris",
+            "eu-central-1": "Europe - Frankfurt",
+            "eu-central-2": "Europe - Zurich",
+            "eu-north-1": "Europe - Stockholm",
+            "eu-south-1": "Europe - Milan",
+            "eu-south-2": "Europe - Spain",
+            "ap-southeast-1": "Asia Pacific - Singapore",
+            "ap-southeast-2": "Asia Pacific - Sydney",
+            "ap-southeast-3": "Asia Pacific - Jakarta",
+            "ap-southeast-4": "Asia Pacific - Melbourne",
+            "ap-south-1": "Asia Pacific - Mumbai",
+            "ap-south-2": "Asia Pacific - Hyderabad",
+            "ap-northeast-1": "Asia Pacific - Tokyo",
+            "ap-northeast-2": "Asia Pacific - Seoul",
+            "ap-northeast-3": "Asia Pacific - Osaka",
+            "ap-east-1": "Asia Pacific - Hong Kong",
+            "sa-east-1": "South America - S\u00e3o Paulo",
+            "me-south-1": "Middle East - Bahrain",
+            "me-central-1": "Middle East - UAE",
+            "af-south-1": "Africa - Cape Town",
+            "il-central-1": "Israel - Tel Aviv"
+          }
+        },
+        {
+          "id": "org_size",
+          "text": "Tell me about your organization - roughly how many people?",
+          "type": "discovery",
+          "required": true,
+          "stores_as": "organization_size",
+          "help_text": "This helps me suggest the right level of infrastructure complexity",
+          "inference": {
+            "constraint": "enum",
+            "valid_values": [
+              "small",
+              "medium",
+              "large"
+            ],
+            "hint": "Classify organization size based on employee count: <50 people \u2192 small, 50-500 people \u2192 medium, 500+ people \u2192 large. If user gives approximate numbers like 'about 30' or 'around 100', classify accordingly. If they describe as 'startup' or 'small team' \u2192 small, 'mid-sized company' \u2192 medium, 'enterprise' or 'large corporation' \u2192 large"
+          },
+          "presentation_template": "Based on your {{employee_description}}, I'll classify this as **{{size_label}}**. This means we'll {{recommendation}}.",
+          "size_labels": {
+            "small": "Small organization (< 50 people)",
+            "medium": "Medium organization (50-500 people)",
+            "large": "Large organization (500+ people)"
+          },
+          "recommendations": {
+            "small": "keep the infrastructure simple with just essential accounts",
+            "medium": "include additional infrastructure accounts for better organization",
+            "large": "plan for full infrastructure accounts and more complex networking"
+          }
+        },
+        {
+          "id": "aws_experience",
+          "text": "What's your team's experience with AWS?",
+          "type": "discovery",
+          "required": true,
+          "stores_as": "aws_experience_level",
+          "help_text": "Just describe your AWS background - I'll figure out the right complexity level",
+          "inference": {
+            "constraint": "enum",
+            "valid_values": [
+              "beginner",
+              "intermediate",
+              "advanced"
+            ],
+            "hint": "Classify AWS experience: 'never used AWS' or 'just getting started' or 'new to cloud' \u2192 beginner. 'used EC2/S3' or 'ran some workloads' or 'familiar with basics' \u2192 intermediate. 'production workloads' or 'infrastructure as code' or 'multi-account experience' or 'AWS certified' \u2192 advanced"
+          },
+          "presentation_template": "Based on your experience ({{experience_description}}), I'll set this up for **{{level_label}}** users. This means {{recommendation}}.",
+          "level_labels": {
+            "beginner": "beginner",
+            "intermediate": "intermediate",
+            "advanced": "advanced"
+          },
+          "recommendations": {
+            "beginner": "we'll use straightforward configurations and avoid complex automation",
+            "intermediate": "we'll include some automation while keeping things manageable",
+            "advanced": "we can use more sophisticated patterns and assume AWS familiarity"
+          }
+        },
+        {
+          "id": "timeline",
+          "text": "How quickly do you need the landing zone deployed?",
+          "type": "single_choice",
+          "required": true,
+          "default": "weeks",
+          "options": [
+            {
+              "value": "days",
+              "label": "Days"
+            },
+            {
+              "value": "weeks",
+              "label": "Weeks"
+            },
+            {
+              "value": "months",
+              "label": "Months"
+            }
+          ],
+          "stores_as": "deployment_timeline",
+          "help_text": "Determines deployment approach and prioritization"
+        }
+      ]
+    },
+    {
+      "id": "account_structure",
+      "name": "Account Structure",
+      "order": 2,
+      "description": "Infrastructure accounts and organizational units",
+      "questions": [
+        {
+          "id": "need_network_account",
+          "text": "Do you need a dedicated Network account for centralized networking?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "network_account_enabled",
+          "help_text": "Recommended for centralized network management and shared connectivity. Required if you want centralized internet egress via an Inspection/Egress VPC."
+        },
+        {
+          "id": "need_sharedservices_account",
+          "text": "Do you need a SharedServices account for shared resources like Active Directory or DNS?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "sharedservices_account_enabled",
+          "help_text": "Useful for hosting shared services accessed by multiple accounts"
+        },
+        {
+          "id": "need_monitoring_account",
+          "text": "Do you need a Monitoring account for centralized observability tools?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "monitoring_account_enabled",
+          "help_text": "Recommended for centralized logging, metrics, and monitoring dashboards"
+        },
+        {
+          "id": "additional_ous",
+          "text": "Security is set up by Control Tower. These Organizational Units will be created: Infrastructure, Workloads, Sandbox, Exceptions. Do you need any additional OUs?",
+          "type": "text",
+          "required": false,
+          "stores_as": "additional_organizational_units",
+          "help_text": "Enter comma-separated list of additional OU names, or leave blank"
+        }
+      ]
+    },
+    {
+      "id": "security_governance",
+      "name": "Security and Governance",
+      "order": 3,
+      "description": "Service control policies and governance settings",
+      "questions": [
+        {
+          "id": "prevent_leave_org",
+          "text": "Should accounts be prevented from leaving the organization?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "scp_prevent_leave_org",
+          "help_text": "Strongly recommended - prevents accidental or unauthorized account removal"
+        },
+        {
+          "id": "restrict_regions",
+          "text": "Do you want to restrict which AWS regions can be used?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "scp_restrict_regions",
+          "help_text": "Limits resource creation to approved regions for compliance and cost control"
+        },
+        {
+          "id": "allowed_regions",
+          "text": "Which geographic areas should be allowed?",
+          "type": "discovery",
+          "required": true,
+          "stores_as": "allowed_regions",
+          "depends_on": {
+            "question_id": "restrict_regions",
+            "answer_value": true
+          },
+          "help_text": "Just describe which parts of the world - I'll map to the right AWS regions. Important: these must be a subset of the regions your existing Control Tower landing zone already governs - org-wide StackSets (e.g. EBS encryption) cannot deploy to a region Control Tower does not govern. Check your governed regions in the Control Tower console (Landing zone settings) or via 'aws controltower get-landing-zone'.",
+          "inference": {
+            "constraint": "aws_region_array",
+            "hint": "Map geographic descriptions to AWS region code arrays. 'Europe' or 'EU' \u2192 [eu-west-1, eu-west-2, eu-central-1, eu-north-1]. 'US' or 'United States' or 'America' \u2192 [us-east-1, us-east-2, us-west-1, us-west-2]. 'Asia Pacific' or 'APAC' or 'Asia' \u2192 [ap-southeast-1, ap-southeast-2, ap-south-1, ap-northeast-1, ap-northeast-2]. 'UK' \u2192 [eu-west-2]. 'Australia' \u2192 [ap-southeast-2]. Multiple regions: 'US and Europe' \u2192 combine both region lists. Include home region in the list. Be inclusive - if user says 'Europe', include all European regions.",
+            "validation_note": "Must output array of valid AWS region codes, e.g., [\"eu-west-2\", \"eu-central-1\"]"
+          },
+          "presentation_template": "Based on '{{user_description}}', I'll allow these regions: {{region_list}}. This includes {{region_count}} regions for {{coverage_description}}.",
+          "region_groupings": {
+            "us": [
+              "us-east-1",
+              "us-east-2",
+              "us-west-1",
+              "us-west-2"
+            ],
+            "canada": [
+              "ca-central-1",
+              "ca-west-1"
+            ],
+            "europe": [
+              "eu-west-1",
+              "eu-west-2",
+              "eu-west-3",
+              "eu-central-1",
+              "eu-central-2",
+              "eu-north-1",
+              "eu-south-1",
+              "eu-south-2"
+            ],
+            "asia_pacific": [
+              "ap-southeast-1",
+              "ap-southeast-2",
+              "ap-southeast-3",
+              "ap-southeast-4",
+              "ap-south-1",
+              "ap-south-2",
+              "ap-northeast-1",
+              "ap-northeast-2",
+              "ap-northeast-3",
+              "ap-east-1"
+            ],
+            "south_america": [
+              "sa-east-1"
+            ],
+            "middle_east": [
+              "me-south-1",
+              "me-central-1"
+            ],
+            "africa": [
+              "af-south-1"
+            ],
+            "israel": [
+              "il-central-1"
+            ]
+          }
+        },
+        {
+          "id": "prevent_public_s3",
+          "text": "Should public S3 buckets be prevented?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "scp_prevent_public_s3",
+          "help_text": "Recommended - blocks creation of publicly accessible S3 buckets"
+        },
+        {
+          "id": "prevent_iam_users",
+          "text": "Should IAM user creation be prevented outside of SSO?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "scp_prevent_iam_users",
+          "help_text": "Recommended for centralized identity management"
+        }
+      ]
+    },
+    {
+      "id": "tagging",
+      "name": "Tagging Requirements",
+      "order": 4,
+      "description": "Resource tagging policies",
+      "questions": [
+        {
+          "id": "enforce_tags",
+          "text": "Do you want to standardize tag values across your organization?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "enforce_tagging",
+          "help_text": "AWS tag policies standardize tag key casing and restrict allowed tag values (e.g. ensuring 'Environment' is always capitalized consistently). Note: they do NOT prevent resource creation without tags \u2014 resources can still be created untagged. To block untagged resources you would need SCPs or AWS Config rules, which are not currently supported by this tool."
+        },
+        {
+          "id": "required_tags",
+          "text": "Which tag keys should be standardized?",
+          "type": "multiple_choice",
+          "required": true,
+          "options": [
+            {
+              "value": "Environment",
+              "label": "Environment (Dev/Staging/Prod)"
+            },
+            {
+              "value": "CostCenter",
+              "label": "Cost Center"
+            },
+            {
+              "value": "Project",
+              "label": "Project"
+            },
+            {
+              "value": "Application",
+              "label": "Application"
+            },
+            {
+              "value": "Owner",
+              "label": "Owner"
+            }
+          ],
+          "stores_as": "required_tags",
+          "depends_on": {
+            "question_id": "enforce_tags",
+            "answer_value": true
+          },
+          "help_text": "Select the tag keys you want to standardize. The policy enforces consistent casing and optionally restricts allowed values \u2014 it does not block resource creation."
+        }
+      ]
+    },
+    {
+      "id": "backup_policies",
+      "name": "Backup Policies",
+      "order": 5,
+      "description": "Automated backup configuration",
+      "questions": [
+        {
+          "id": "enable_backups",
+          "text": "Do you need automated backup policies for workload accounts?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "backup_enabled",
+          "help_text": "Deploys AWS Backup policies across your Workloads OU. Important: backups use tag-based selection \u2014 only resources tagged with BackupSchedule=Daily (or Weekly) will be backed up. You must tag your resources after deployment for backups to take effect. Cost: charged on backup storage used (~$0.05/GB/month for EBS snapshots, varies by service)."
+        },
+        {
+          "id": "backup_frequency",
+          "text": "What backup frequency do you need?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "value": "daily",
+              "label": "Daily"
+            },
+            {
+              "value": "weekly",
+              "label": "Weekly"
+            }
+          ],
+          "stores_as": "backup_frequency",
+          "depends_on": {
+            "question_id": "enable_backups",
+            "answer_value": true
+          },
+          "help_text": "Resources must be tagged BackupSchedule=Daily or BackupSchedule=Weekly to be included in the backup plan."
+        },
+        {
+          "id": "backup_retention",
+          "text": "How long should backups be retained?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "value": "30",
+              "label": "30 days"
+            },
+            {
+              "value": "90",
+              "label": "90 days"
+            },
+            {
+              "value": "365",
+              "label": "1 year"
+            }
+          ],
+          "stores_as": "backup_retention_days",
+          "depends_on": {
+            "question_id": "enable_backups",
+            "answer_value": true
+          },
+          "help_text": "How long to keep backup copies"
+        }
+      ]
+    },
+    {
+      "id": "network_architecture",
+      "name": "Network Architecture",
+      "order": 6,
+      "description": "VPC and connectivity configuration",
+      "questions": [
+        {
+          "id": "delete_default_vpcs",
+          "text": "Should default VPCs be deleted in all accounts?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "delete_default_vpcs",
+          "help_text": "Recommended - removes insecure default network configurations"
+        },
+        {
+          "id": "availability_zones",
+          "text": "How many Availability Zones should workload VPCs span?",
+          "type": "single_choice",
+          "required": true,
+          "default": "2",
+          "options": [
+            {
+              "value": "2",
+              "label": "2 AZs"
+            },
+            {
+              "value": "3",
+              "label": "3 AZs"
+            }
+          ],
+          "stores_as": "availability_zones",
+          "help_text": "More AZs provide higher availability but increase costs"
+        },
+        {
+          "id": "auto_create_workload_vpcs",
+          "text": "Should workload VPCs be automatically created for accounts in the Workloads OU?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "auto_create_workload_vpcs",
+          "help_text": "Automatically provisions VPCs when new workload accounts are created"
+        },
+        {
+          "id": "enable_ipam",
+          "text": "Do you want to use AWS IPAM for centralized IP address management?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "ipam_enabled",
+          "help_text": "IPAM (IP Address Manager) centrally manages and allocates CIDR ranges across your accounts, preventing IP conflicts. It adds some complexity and setup overhead. If disabled, VPCs use explicit CIDR allocation instead. The default IPAM pool uses 10.100.0.0/16 \u2014 if this conflicts with your existing network ranges, enable IPAM so you can configure it. Cost: free for private IP management; charges apply only if you enable public IP insights (~$0.00027/IP/hour)."
+        },
+        {
+          "id": "enable_vpc_endpoints",
+          "text": "Do you want a centralized Endpoint VPC for private access to AWS services like S3 and DynamoDB? This avoids sending service traffic through NAT Gateway, reducing cost and improving security.",
+          "type": "boolean",
+          "stores_as": "vpc_endpoints_enabled",
+          "default": false,
+          "depends_on": {
+            "question_id": "need_network_account",
+            "answer_value": true
+          },
+          "help_text": "Creates a dedicated VPC with interface endpoints shared across all workload VPCs via Transit Gateway. Reduces NAT Gateway data processing charges for AWS service traffic."
+        },
+        {
+          "id": "enable_hybrid_dns",
+          "text": "Do you want to deploy hybrid DNS (Route 53 Resolver) to forward DNS between AWS and your on-premises network?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "route53_resolver_enabled",
+          "depends_on": {
+            "question_id": "need_network_account",
+            "answer_value": true
+          },
+          "help_text": "Deploys inbound/outbound Route 53 Resolver endpoints in the Network account with a FORWARD rule to your on-prem DNS, shared org-wide. Requires a dedicated Network account. Only enable if you have on-premises DNS servers to integrate with. Cost: ~$0.125/hr per resolver endpoint ENI (two ENIs per endpoint) plus $0.40 per million queries."
+        },
+        {
+          "id": "hybrid_dns_outbound_domains",
+          "text": "Which on-premises DNS domains should be forwarded from AWS? Enter a comma-separated list (e.g. corp.example.com, internal.example.com).",
+          "type": "text",
+          "required": true,
+          "stores_as": "route53_resolver_outbound_domains",
+          "depends_on": {
+            "question_id": "enable_hybrid_dns",
+            "answer_value": true
+          },
+          "help_text": "DNS queries for these domains are forwarded from AWS to your on-premises DNS servers via the outbound resolver endpoint."
+        },
+        {
+          "id": "hybrid_dns_onprem_servers",
+          "text": "What are your on-premises DNS server IP addresses? Enter a comma-separated list (e.g. 192.168.1.10, 192.168.1.11).",
+          "type": "text",
+          "required": true,
+          "stores_as": "route53_resolver_on_prem_dns_servers",
+          "depends_on": {
+            "question_id": "enable_hybrid_dns",
+            "answer_value": true
+          },
+          "help_text": "The target DNS servers the FORWARD rule sends queries to. Must be reachable from the Network account VPC over your hybrid connection."
+        },
+        {
+          "id": "hybrid_dns_allowed_cidrs",
+          "text": "Which source CIDR ranges may send DNS queries to the inbound resolver? Enter a comma-separated list (e.g. 192.168.0.0/16, 10.0.0.0/8).",
+          "type": "text",
+          "required": true,
+          "stores_as": "route53_resolver_allowed_source_cidrs",
+          "depends_on": {
+            "question_id": "enable_hybrid_dns",
+            "answer_value": true
+          },
+          "help_text": "On-premises networks allowed to resolve AWS private DNS via the inbound resolver endpoint's security group."
+        }
+      ]
+    },
+    {
+      "id": "network_security",
+      "name": "Network Security",
+      "order": 7,
+      "description": "Network firewall and inspection",
+      "questions": [
+        {
+          "id": "enable_egress_vpc",
+          "text": "Do you want centralized internet egress via an Inspection/Egress VPC?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "egress_vpc_enabled",
+          "depends_on": {
+            "question_id": "need_network_account",
+            "answer_value": true
+          },
+          "help_text": "Provides a single controlled exit point for internet traffic from all VPCs via Transit Gateway. Requires a dedicated Network account \u2014 the Inspection/Egress VPC is deployed there via StackSet. Cost: Transit Gateway ~$0.05/hr + $0.02/GB data processed; NAT Gateway in the egress VPC ~$0.045/hr per AZ plus data transfer charges."
+        },
+        {
+          "id": "enable_network_firewall",
+          "text": "Do you want AWS Network Firewall in the Inspection VPC for traffic inspection?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "network_firewall_enabled",
+          "depends_on": {
+            "question_id": "enable_egress_vpc",
+            "answer_value": true
+          },
+          "help_text": "Adds deep packet inspection and stateful firewall rules - recommended for regulated environments but adds cost. Cost: ~$0.395/hr per AZ for the firewall endpoint (~$285/month for 2 AZs) plus $0.065/GB data processed."
+        },
+        {
+          "id": "enable_firewall_logging",
+          "text": "Do you want to enable Network Firewall logging?",
+          "type": "yes_no",
+          "required": true,
+          "stores_as": "firewall_logging_enabled",
+          "depends_on": {
+            "question_id": "enable_network_firewall",
+            "answer_value": true
+          },
+          "help_text": "Logs sent to centralized S3 bucket in Log Archive account"
+        }
+      ]
+    },
+    {
+      "id": "logging_monitoring",
+      "name": "Logging and Monitoring",
+      "order": 8,
+      "description": "VPC Flow Logs and log retention",
+      "questions": [
+        {
+          "id": "enable_flow_logs_bucket",
+          "text": "Do you want to enable the VPC Flow Logs S3 bucket in Log Archive account?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "flow_logs_bucket_enabled",
+          "help_text": "Creates a centralized S3 bucket in your Log Archive account for storing VPC Flow Logs. Required if you choose S3 as the flow log destination."
+        },
+        {
+          "id": "enable_flow_logs",
+          "text": "Do you want to enable VPC Flow Logs? Note: this applies to the centralized Inspection/Egress VPC only \u2014 flow logs on workload VPCs must be enabled separately after deployment.",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "flow_logs_enabled",
+          "help_text": "Enables VPC Flow Logs on the centralized Inspection/Egress VPC (if enabled). Note: flow logs are NOT automatically enabled on workload VPCs \u2014 you will need to enable those separately per account after deployment."
+        },
+        {
+          "id": "flow_log_destination",
+          "text": "VPC Flow Logs for the centralized Inspection/Egress VPC are delivered to the central S3 bucket in the Log Archive account. Confirm S3 as the destination.",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "value": "s3",
+              "label": "S3 (central Log Archive bucket)"
+            }
+          ],
+          "stores_as": "flow_log_destination",
+          "depends_on": {
+            "question_id": "enable_flow_logs",
+            "answer_value": true
+          },
+          "help_text": "The landing zone centralizes flow logs to the Log Archive S3 bucket, which is cost-effective for long-term storage. CloudWatch Logs delivery is not offered for the centralized Inspection/Egress VPC; enable CloudWatch flow logs per workload VPC/account after deployment if you need real-time queries."
+        },
+        {
+          "id": "log_retention",
+          "text": "How long should logs be retained?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "value": "30",
+              "label": "30 days"
+            },
+            {
+              "value": "90",
+              "label": "90 days"
+            },
+            {
+              "value": "365",
+              "label": "1 year"
+            }
+          ],
+          "stores_as": "log_retention_days",
+          "depends_on": {
+            "question_id": "enable_flow_logs",
+            "answer_value": true
+          },
+          "help_text": "Longer retention useful for compliance and forensics but increases storage costs"
+        }
+      ]
+    },
+    {
+      "id": "cost_management",
+      "name": "Cost Management",
+      "order": 9,
+      "description": "Budget alerts and cost controls",
+      "questions": [
+        {
+          "id": "monthly_budget",
+          "text": "What is your expected monthly AWS spend (USD)?",
+          "type": "number",
+          "required": true,
+          "validation": {
+            "min": 100,
+            "max": 1000000
+          },
+          "stores_as": "monthly_budget",
+          "help_text": "Used to set up budget alerts"
+        },
+        {
+          "id": "budget_alerts",
+          "text": "Should alerts be sent when 80% of budget is reached?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "budget_alerts_enabled",
+          "help_text": "Proactive notification before overspending"
+        },
+        {
+          "id": "alert_email",
+          "text": "What email address should receive budget alerts?",
+          "type": "email",
+          "required": true,
+          "stores_as": "budget_alert_email",
+          "depends_on": {
+            "question_id": "budget_alerts",
+            "answer_value": true
+          },
+          "help_text": "Email for budget notifications"
+        }
+      ]
+    },
+    {
+      "id": "email_addresses",
+      "name": "Account Email Addresses",
+      "order": 10,
+      "description": "Email addresses for AWS accounts. IMPORTANT: Each email must be globally unique across ALL of AWS. Plus-addressed emails (user+tag@domain.com) often collide with existing accounts. Use dedicated mailboxes or distribution lists. If account creation fails due to EMAIL_ALREADY_EXISTS, the failed account cannot be rolled back (AWS retains it).",
+      "questions": [
+        {
+          "id": "email_domain",
+          "text": "What is your organization's email domain?",
+          "type": "text",
+          "required": true,
+          "validation": {
+            "pattern": "^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,}$"
+          },
+          "stores_as": "email_domain",
+          "help_text": "e.g., example.com - used for AWS account root emails"
+        },
+        {
+          "id": "email_management",
+          "text": "What email address should be used for the Management account?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_management",
+          "help_text": "Usually your existing AWS account email"
+        },
+        {
+          "id": "email_logarchive",
+          "text": "What email address should be used for the Log Archive account?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_logarchive",
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails (e.g., user+logarchive@domain.com) as they often collide. Use a dedicated mailbox or distribution list."
+        },
+        {
+          "id": "email_audit",
+          "text": "What email address should be used for the Audit account?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_audit",
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails (e.g., user+audit@domain.com) as they often collide. Use a dedicated mailbox or distribution list."
+        },
+        {
+          "id": "email_network",
+          "text": "What email address should be used for the Network account?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_network",
+          "depends_on": {
+            "question_id": "need_network_account",
+            "answer_value": true
+          },
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails. Use a dedicated mailbox or distribution list."
+        },
+        {
+          "id": "email_sharedservices",
+          "text": "What email address should be used for the SharedServices account?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_sharedservices",
+          "depends_on": {
+            "question_id": "need_sharedservices_account",
+            "answer_value": true
+          },
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails. Use a dedicated mailbox or distribution list."
+        },
+        {
+          "id": "email_monitoring",
+          "text": "What email address should be used for the Monitoring account?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_monitoring",
+          "depends_on": {
+            "question_id": "need_monitoring_account",
+            "answer_value": true
+          },
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails. Use a dedicated mailbox or distribution list."
+        }
+      ]
+    },
+    {
+      "id": "confirmation",
+      "name": "Deployment Confirmation",
+      "order": 11,
+      "description": "Final confirmation before generating configuration",
+      "questions": [
+        {
+          "id": "understand_limitations",
+          "text": "This starter configuration includes the options you selected above. It does NOT include: advanced security services (GuardDuty, Security Hub), CloudWatch alarms, Identity Center, or CloudTrail data events. Do you understand these limitations and want to proceed?",
+          "type": "yes_no",
+          "required": true,
+          "stores_as": "accept_limitations",
+          "help_text": "Additional features can be added later as the generator capabilities expand"
+        },
+        {
+          "id": "ready_to_generate",
+          "text": "Are you ready to proceed with generating your landing zone configuration?",
+          "type": "yes_no",
+          "required": true,
+          "stores_as": "ready_to_generate",
+          "help_text": "The configuration will be generated based on your answers"
+        }
+      ]
+    }
+  ]
+}

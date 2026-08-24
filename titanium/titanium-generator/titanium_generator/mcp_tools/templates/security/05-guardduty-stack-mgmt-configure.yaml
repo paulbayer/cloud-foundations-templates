@@ -1,0 +1,489 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'GuardDuty Organization Configuration with Delegation'
+
+Parameters:
+  uAuditAccountId:
+    Type: String
+    Description: Audit account ID where GuardDuty will be delegated
+
+  uGuardDutyRoleName:
+    Type: String
+    Description: Name of the IAM role in the Audit account to assume
+    Default: sra-guardduty-org-configuration
+
+  uAutoEnableS3Logs:
+    Type: String
+    Description: Auto-enable S3 logs for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uAutoEnableKubernetesAuditLogs:
+    Type: String
+    Description: Auto-enable Kubernetes audit logs for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uAutoEnableMalwareProtection:
+    Type: String
+    Description: Auto-enable Malware Protection for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uEnableRdsLoginEvents:
+    Type: String
+    Description: Enable RDS login events for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uEnableRuntimeMonitoring:
+    Type: String
+    Description: Enable Runtime Monitoring for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uEnableEksAddonManagement:
+    Type: String
+    Description: Enable EKS addon management for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uEnableEcsFargateAgentManagement:
+    Type: String
+    Description: Enable ECS Fargate agent management for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uEnableEc2AgentManagement:
+    Type: String
+    Description: Enable EC2 agent management for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uEnableLambdaNetworkLogs:
+    Type: String
+    Description: Enable Lambda network logs for GuardDuty
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+Conditions:
+  cEnableRuntimeMonitoring: !Equals [!Ref uEnableRuntimeMonitoring, 'true']
+  cEnableEksAddonManagement: !Equals [!Ref uEnableEksAddonManagement, 'true']
+  cEnableEcsFargateAgentManagement: !Equals [!Ref uEnableEcsFargateAgentManagement, 'true']
+  cEnableEc2AgentManagement: !Equals [!Ref uEnableEc2AgentManagement, 'true']
+
+Resources:
+  # Note: GuardDuty detector is created in the Audit account via template 03
+  # The management account does not need a detector for the delegated administrator model
+  # GuardDuty delegation is handled by the Lambda function below
+  # using the AWS API since AWS::GuardDuty::DelegatedAdmin is not a valid resource type
+
+  rGuardDutyConfigurationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: sra-guardduty-org-lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GuardDutyManagementAccountPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:ListAccounts
+                  - organizations:DescribeOrganization
+                  - organizations:EnableAWSServiceAccess
+                  - organizations:RegisterDelegatedAdministrator
+                  - organizations:ListDelegatedAdministrators
+                  # Deregister the Organizations-level delegated administrator on
+                  # teardown so it does not orphan and accumulate (issue #111).
+                  - organizations:DeregisterDelegatedAdministrator
+                  - organizations:ListAWSServiceAccessForOrganization
+                  - organizations:DescribeOrganizationalUnit
+                  - organizations:DescribeAccount
+                  - guardduty:EnableOrganizationAdminAccount
+                  - guardduty:DisableOrganizationAdminAccount
+                  - guardduty:ListOrganizationAdminAccounts
+                  # Delete the management-account detector left behind by enabling
+                  # GuardDuty delegation, so it does not accumulate (issue #113).
+                  - guardduty:ListDetectors
+                  - guardduty:DeleteDetector
+                  - iam:CreateServiceLinkedRole
+                  - iam:GetRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDuty'
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName: guardduty.amazonaws.com
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${uAuditAccountId}:role/${uGuardDutyRoleName}'
+
+  rGuardDutyConfigurationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt rGuardDutyConfigurationLambdaRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+          import os
+          import time
+          from botocore.exceptions import ClientError
+
+          # Configure logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+              logger.info(f"Received event: {event}")
+              
+              # Initialize response data
+              response_data = {}
+              
+              try:
+                  # Check if this is a delete event
+                  if event['RequestType'] == 'Delete':
+                      logger.info("Delete request - cleaning up GuardDuty organization configuration")
+                      
+                      # Get parameters
+                      properties = event['ResourceProperties']
+                      audit_account_id = properties.get('AuditAccountId')
+                      role_name = properties.get('GuardDutyRoleName')
+                      
+                      # Step 1: Assume role in Audit account to disable organization config
+                      sts_client = boto3.client('sts')
+                      role_arn = f'arn:{boto3.Session().get_partition_for_region(boto3.Session().region_name)}:iam::{audit_account_id}:role/{role_name}'
+                      
+                      try:
+                          assumed_role = sts_client.assume_role(
+                              RoleArn=role_arn,
+                              RoleSessionName='GuardDutyOrgCleanup'
+                          )
+                          
+                          audit_guardduty_client = boto3.client(
+                              'guardduty',
+                              aws_access_key_id=assumed_role['Credentials']['AccessKeyId'],
+                              aws_secret_access_key=assumed_role['Credentials']['SecretAccessKey'],
+                              aws_session_token=assumed_role['Credentials']['SessionToken']
+                          )
+                          
+                          # Get detector ID
+                          detectors = audit_guardduty_client.list_detectors()
+                          if detectors['DetectorIds']:
+                              detector_id = detectors['DetectorIds'][0]
+                              
+                              # Disable auto-enable for new accounts
+                              logger.info("Disabling auto-enable for new organization members")
+                              audit_guardduty_client.update_organization_configuration(
+                                  DetectorId=detector_id,
+                                  AutoEnableOrganizationMembers='NONE'
+                              )
+                              
+                              # List and disassociate members
+                              logger.info("Disassociating member accounts")
+                              members_response = audit_guardduty_client.list_members(DetectorId=detector_id)
+                              if members_response.get('Members'):
+                                  account_ids = [m['AccountId'] for m in members_response['Members']]
+                                  audit_guardduty_client.disassociate_members(
+                                      DetectorId=detector_id,
+                                      AccountIds=account_ids
+                                  )
+                                  logger.info(f"Disassociated {len(account_ids)} member accounts")
+                      except ClientError as e:
+                          logger.warning(f"Error during audit account cleanup: {e}")
+                      
+                      # Step 2: Disable delegated admin from management account
+                      try:
+                          mgmt_guardduty_client = boto3.client('guardduty')
+                          logger.info(f"Disabling GuardDuty delegated admin for account {audit_account_id}")
+                          mgmt_guardduty_client.disable_organization_admin_account(
+                              AdminAccountId=audit_account_id
+                          )
+                          logger.info("GuardDuty delegated admin disabled successfully")
+                      except ClientError as e:
+                          logger.warning(f"Error disabling delegated admin: {e}")
+
+                      # Step 3: Deregister the Organizations-level delegated admin.
+                      # disable_organization_admin_account (above) removes the
+                      # GuardDuty service-level admin but leaves the Organizations
+                      # register-delegated-administrator entry for
+                      # guardduty.amazonaws.com, which otherwise orphans and
+                      # accumulates across deploy/teardown cycles (issue #111).
+                      # Guarded + best-effort; never fatal. Leave config -> Audit
+                      # alone (Control Tower manages it).
+                      try:
+                          orgs_client = boto3.client('organizations')
+                          service_principal = 'guardduty.amazonaws.com'
+                          registered = orgs_client.list_delegated_administrators(
+                              ServicePrincipal=service_principal
+                          ).get('DelegatedAdministrators', [])
+                          if any(a.get('Id') == audit_account_id for a in registered):
+                              orgs_client.deregister_delegated_administrator(
+                                  AccountId=audit_account_id,
+                                  ServicePrincipal=service_principal
+                              )
+                              logger.info("Deregistered Organizations delegated admin for guardduty")
+                          else:
+                              logger.info("No Organizations delegated admin registration for guardduty")
+                      except ClientError as e:
+                          logger.warning(f"Error deregistering Organizations delegated admin: {e}")
+
+                      # Step 4: Delete the management-account GuardDuty detector.
+                      # Enabling GuardDuty delegation from the management account
+                      # (enable_organization_admin_account / enable_aws_service_access
+                      # on create) leaves a detector in the management account as a
+                      # side-effect. In the delegated-admin model the management
+                      # account should carry no detector, so teardown removes it;
+                      # otherwise it survives and accumulates across deploy/teardown
+                      # cycles (issue #113). Best-effort; never fatal.
+                      try:
+                          mgmt_gd = boto3.client('guardduty')
+                          detector_ids = mgmt_gd.list_detectors().get('DetectorIds', [])
+                          for detector_id in detector_ids:
+                              mgmt_gd.delete_detector(DetectorId=detector_id)
+                              logger.info(f"Deleted management-account GuardDuty detector {detector_id}")
+                          if not detector_ids:
+                              logger.info("No management-account GuardDuty detector to delete")
+                      except ClientError as e:
+                          logger.warning(f"Error deleting management-account GuardDuty detector: {e}")
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  # Get parameters from the event
+                  properties = event['ResourceProperties']
+                  audit_account_id = properties.get('AuditAccountId')
+                  role_name = properties.get('GuardDutyRoleName')
+                  auto_enable_s3_logs = properties.get('AutoEnableS3Logs', 'true').lower() == 'true'
+                  auto_enable_kubernetes_audit_logs = properties.get('AutoEnableKubernetesAuditLogs', 'true').lower() == 'true'
+                  auto_enable_malware_protection = properties.get('AutoEnableMalwareProtection', 'true').lower() == 'true'
+                  enable_rds_login_events = properties.get('EnableRdsLoginEvents', 'true').lower() == 'true'
+                  enable_runtime_monitoring = properties.get('EnableRuntimeMonitoring', 'true').lower() == 'true'
+                  enable_eks_addon_management = properties.get('EnableEksAddonManagement', 'true').lower() == 'true'
+                  enable_ecs_fargate_agent_management = properties.get('EnableEcsFargateAgentManagement', 'true').lower() == 'true'
+                  enable_ec2_agent_management = properties.get('EnableEc2AgentManagement', 'true').lower() == 'true'
+                  enable_lambda_network_logs = properties.get('EnableLambdaNetworkLogs', 'true').lower() == 'true'
+                  
+                  # Step 1: Use management account credentials to handle delegation
+                  # This requires Organizations permissions that only exist in the management account
+                  logger.info("Step 1: Handling GuardDuty delegation in management account")
+                  mgmt_guardduty_client = boto3.client('guardduty')
+                  org_client = boto3.client('organizations')
+                  
+                  try:
+                      # First, ensure GuardDuty service access is enabled in Organizations
+                      logger.info("Enabling AWS service access for GuardDuty")
+                      try:
+                          org_client.enable_aws_service_access(
+                              ServicePrincipal='guardduty.amazonaws.com'
+                          )
+                          logger.info("GuardDuty service access enabled")
+                      except ClientError as e:
+                          if 'AccessDeniedException' in str(e) or 'already enabled' in str(e).lower():
+                              logger.info("GuardDuty service access already enabled or no permission needed")
+                          else:
+                              raise
+                      
+                      # Enable malware protection service access
+                      # Required when delegated admin is different from management account
+                      # See: https://docs.aws.amazon.com/guardduty/latest/ug/configure-malware-protection-guardduty-initiated-multi-account.html
+                      logger.info("Enabling AWS service access for GuardDuty Malware Protection")
+                      try:
+                          org_client.enable_aws_service_access(
+                              ServicePrincipal='malware-protection.guardduty.amazonaws.com'
+                          )
+                          logger.info("GuardDuty Malware Protection service access enabled")
+                      except ClientError as e:
+                          if 'AccessDeniedException' in str(e) or 'already enabled' in str(e).lower():
+                              logger.info("GuardDuty Malware Protection service access already enabled or no permission needed")
+                          else:
+                              raise
+                      
+                      # Check if GuardDuty already has a delegated admin
+                      # Must use GuardDuty API to check GuardDuty-specific delegation
+                      admin_accounts_response = mgmt_guardduty_client.list_organization_admin_accounts()
+                      admin_accounts = admin_accounts_response.get('AdminAccounts', [])
+                      
+                      if admin_accounts:
+                          logger.info(f"GuardDuty admin account already enabled: {admin_accounts}")
+                      else:
+                          # Enable organization admin account
+                          logger.info(f"Enabling {audit_account_id} as GuardDuty admin account")
+                          mgmt_guardduty_client.enable_organization_admin_account(
+                              AdminAccountId=audit_account_id
+                          )
+                          # Wait for the admin account to be enabled (increased from 10 to 30 seconds)
+                          logger.info("Waiting 30 seconds for delegation to propagate...")
+                          time.sleep(30)
+                  except ClientError as e:
+                      logger.error(f"Error delegating GuardDuty admin: {e}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
+                      return
+                  
+                  # Step 2: Assume role in the Audit account
+                  # The Audit account is the delegated administrator and must configure organization settings
+                  logger.info("Step 2: Assuming role in Audit account")
+                  sts_client = boto3.client('sts')
+                  
+                  try:
+                      role_arn = f'arn:{boto3.Session().get_partition_for_region(boto3.Session().region_name)}:iam::{audit_account_id}:role/{role_name}'
+                      logger.info(f"Assuming role: {role_arn}")
+                      
+                      assumed_role = sts_client.assume_role(
+                          RoleArn=role_arn,
+                          RoleSessionName='GuardDutyOrgConfiguration'
+                      )
+                      
+                      # Create GuardDuty client with assumed credentials
+                      audit_guardduty_client = boto3.client(
+                          'guardduty',
+                          aws_access_key_id=assumed_role['Credentials']['AccessKeyId'],
+                          aws_secret_access_key=assumed_role['Credentials']['SecretAccessKey'],
+                          aws_session_token=assumed_role['Credentials']['SessionToken']
+                      )
+                      
+                      logger.info("Successfully assumed role in Audit account")
+                  except ClientError as e:
+                      logger.error(f"Error assuming role in Audit account: {e}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": f"Failed to assume role: {str(e)}"})
+                      return
+                  
+                  # Step 3: Get the GuardDuty detector ID in the Audit account
+                  logger.info("Step 3: Getting GuardDuty detector in Audit account")
+                  try:
+                      detectors = audit_guardduty_client.list_detectors()
+                      if not detectors['DetectorIds']:
+                          logger.error("No GuardDuty detector found in the Audit account")
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": "No GuardDuty detector found in Audit account. Ensure template 03 is deployed."})
+                          return
+                      
+                      detector_id = detectors['DetectorIds'][0]
+                      logger.info(f"Found GuardDuty detector in Audit account: {detector_id}")
+                  except ClientError as e:
+                      logger.error(f"Error getting detector from Audit account: {e}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": f"Failed to get detector: {str(e)}"})
+                      return
+                  
+                  # Step 4: Configure GuardDuty organization settings from the Audit account
+                  # IMPORTANT: This API must be called from the delegated administrator account, not the management account
+                  logger.info("Step 4: Configuring GuardDuty organization settings from Audit account (delegated admin)")
+                  
+                  # Convert boolean to AutoEnable string for Features API
+                  def bool_to_auto_enable(val):
+                      return 'ALL' if val else 'NONE'
+                  
+                  try:
+                      # Configure GuardDuty organization settings using Features API
+                      # Note: AWS API requires using ONLY Features parameter, not DataSources
+                      # This must be called from the delegated admin account (Audit account)
+                      audit_guardduty_client.update_organization_configuration(
+                              DetectorId=detector_id,
+                              AutoEnableOrganizationMembers='ALL',
+                              Features=[
+                                  {
+                                      'Name': 'S3_DATA_EVENTS',
+                                      'AutoEnable': bool_to_auto_enable(auto_enable_s3_logs)
+                                  },
+                                  {
+                                      'Name': 'EKS_AUDIT_LOGS',
+                                      'AutoEnable': bool_to_auto_enable(auto_enable_kubernetes_audit_logs)
+                                  },
+                                  {
+                                      'Name': 'EBS_MALWARE_PROTECTION',
+                                      'AutoEnable': bool_to_auto_enable(auto_enable_malware_protection)
+                                  },
+                                  {
+                                      'Name': 'RDS_LOGIN_EVENTS',
+                                      'AutoEnable': bool_to_auto_enable(enable_rds_login_events)
+                                  },
+                                  {
+                                      'Name': 'LAMBDA_NETWORK_LOGS',
+                                      'AutoEnable': bool_to_auto_enable(enable_lambda_network_logs)
+                                  },
+                                  {
+                                      'Name': 'RUNTIME_MONITORING',
+                                      'AutoEnable': bool_to_auto_enable(enable_runtime_monitoring),
+                                      'AdditionalConfiguration': [
+                                          {
+                                              'Name': 'EKS_ADDON_MANAGEMENT',
+                                              'AutoEnable': bool_to_auto_enable(enable_eks_addon_management)
+                                          },
+                                          {
+                                              'Name': 'ECS_FARGATE_AGENT_MANAGEMENT',
+                                              'AutoEnable': bool_to_auto_enable(enable_ecs_fargate_agent_management)
+                                          },
+                                          {
+                                              'Name': 'EC2_AGENT_MANAGEMENT',
+                                              'AutoEnable': bool_to_auto_enable(enable_ec2_agent_management)
+                                          }
+                                      ]
+                                  }
+                              ]
+                          )
+                      logger.info("Successfully configured GuardDuty organization settings")
+                  except ClientError as e:
+                      logger.error(f"Error configuring organization settings: {e}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": f"Failed to configure organization: {str(e)}"})
+                      return
+                  
+                  # Get all accounts in the organization
+                  accounts = []
+                  paginator = org_client.get_paginator('list_accounts')
+                  for page in paginator.paginate():
+                      accounts.extend(page['Accounts'])
+                  
+                  # Filter for active accounts
+                  active_accounts = [account for account in accounts if account['Status'] == 'ACTIVE']
+                  
+                  logger.info(f"Found {len(active_accounts)} active accounts in the organization")
+                  response_data['AccountsCount'] = len(active_accounts)
+                  response_data['DetectorId'] = detector_id
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                      
+
+              except Exception as e:
+                  logger.error(f"Unexpected error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
+                  return
+
+  rGuardDutyConfigurationCustomResource:
+    Type: Custom::GuardDutyConfiguration
+    Properties:
+      ServiceToken: !GetAtt rGuardDutyConfigurationLambda.Arn
+      AuditAccountId: !Ref uAuditAccountId
+      GuardDutyRoleName: !Ref uGuardDutyRoleName
+      AutoEnableS3Logs: !Ref uAutoEnableS3Logs
+      AutoEnableKubernetesAuditLogs: !Ref uAutoEnableKubernetesAuditLogs
+      AutoEnableMalwareProtection: !Ref uAutoEnableMalwareProtection
+      EnableRdsLoginEvents: !Ref uEnableRdsLoginEvents
+      EnableRuntimeMonitoring: !Ref uEnableRuntimeMonitoring
+      EnableEksAddonManagement: !Ref uEnableEksAddonManagement
+      EnableEcsFargateAgentManagement: !Ref uEnableEcsFargateAgentManagement
+      EnableEc2AgentManagement: !Ref uEnableEc2AgentManagement
+      EnableLambdaNetworkLogs: !Ref uEnableLambdaNetworkLogs
+
+Outputs:
+  GuardDutyConfigurationLambdaArn:
+    Description: ARN of the GuardDuty Configuration Lambda
+    Value: !GetAtt rGuardDutyConfigurationLambda.Arn
+  
+  AuditAccountId:
+    Description: Audit account ID configured as GuardDuty delegated administrator
+    Value: !Ref uAuditAccountId

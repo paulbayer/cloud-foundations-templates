@@ -1,0 +1,873 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "industry": "enterprise",
+    "description": "Enterprise landing zone configuration for large organizations with complex requirements",
+    "total_questions": 48,
+    "estimated_time_minutes": 30
+  },
+  "sections": [
+    {
+      "id": "basic_info",
+      "name": "Basic Information",
+      "order": 1,
+      "description": "Organization details and initial classification",
+      "questions": [
+        {
+          "id": "org_name",
+          "text": "What is your organization's name?",
+          "type": "text",
+          "required": true,
+          "validation": {
+            "min_length": 1,
+            "max_length": 100
+          },
+          "stores_as": "organization_name",
+          "help_text": "This will be used in account names and resource tags"
+        },
+        {
+          "id": "home_region",
+          "text": "Where is your organization primarily based?",
+          "type": "discovery",
+          "required": true,
+          "help_text": "Tell me your primary location - I'll recommend the best AWS region",
+          "stores_as": "home_region",
+          "inference": {
+            "constraint": "aws_region",
+            "hint": "Map user's location to the nearest AWS region that supports Control Tower. Consider: geographic proximity, data residency requirements, and service availability. Common mappings: UK/London → eu-west-2, Australia/Sydney → ap-southeast-2, US East Coast → us-east-1, US West Coast → us-west-2, Germany/Netherlands → eu-central-1, Singapore/Southeast Asia → ap-southeast-1, Japan → ap-northeast-1, Canada → ca-central-1",
+            "validation_note": "MUST store a valid AWS region CODE (e.g., eu-west-2, us-east-1, ap-southeast-2). Do the location->region mapping yourself and record ONLY the region code as home_region -- NEVER store the user's raw city/country/phrase. If the location is ambiguous (e.g. 'Washington' = WA state vs Washington DC), ask the user which region. A non-region value is rejected by the generator (issue #110)."
+          },
+          "presentation_template": "Based on your location, I recommend **{{value}}** ({{region_label}}) as your home region for Control Tower and centralized services.",
+          "region_labels": {
+            "us-east-1": "US East - N. Virginia",
+            "us-east-2": "US East - Ohio",
+            "us-west-1": "US West - N. California",
+            "us-west-2": "US West - Oregon",
+            "ca-central-1": "Canada - Central",
+            "eu-west-1": "Europe - Ireland",
+            "eu-west-2": "Europe - London",
+            "eu-west-3": "Europe - Paris",
+            "eu-central-1": "Europe - Frankfurt",
+            "eu-north-1": "Europe - Stockholm",
+            "ap-southeast-1": "Asia Pacific - Singapore",
+            "ap-southeast-2": "Asia Pacific - Sydney",
+            "ap-south-1": "Asia Pacific - Mumbai",
+            "ap-northeast-1": "Asia Pacific - Tokyo",
+            "ap-northeast-2": "Asia Pacific - Seoul"
+          }
+        },
+        {
+          "id": "org_type",
+          "text": "What type of enterprise organization are you?",
+          "type": "discovery",
+          "required": true,
+          "stores_as": "organization_type",
+          "help_text": "Tell me your industry sector - this helps configure appropriate compliance and security controls",
+          "inference": {
+            "constraint": "enum",
+            "valid_values": ["financial", "healthcare", "retail", "manufacturing", "technology", "media", "energy", "other"],
+            "hint": "Classify organization by industry: 'bank/financial services' → financial, 'hospital/healthcare/pharma' → healthcare, 'retail/ecommerce/shopping' → retail, 'factory/manufacturing/industrial' → manufacturing, 'software/saas/tech' → technology, 'media/entertainment/publishing' → media, 'energy/utilities/power' → energy, anything else → other"
+          },
+          "presentation_template": "Based on your industry ({{industry_description}}), I'll classify this as **{{type_label}}** and configure appropriate {{compliance_note}}.",
+          "type_labels": {
+            "financial": "Financial Services",
+            "healthcare": "Healthcare/Life Sciences",
+            "retail": "Retail/E-commerce",
+            "manufacturing": "Manufacturing/Industrial",
+            "technology": "Technology/Software",
+            "media": "Media/Entertainment",
+            "energy": "Energy/Utilities",
+            "other": "Other Industry"
+          },
+          "compliance_notes": {
+            "financial": "PCI DSS and SOX compliance controls",
+            "healthcare": "HIPAA compliance controls",
+            "retail": "PCI DSS compliance for payment processing",
+            "manufacturing": "industry-specific security standards",
+            "technology": "SOC 2 compliance standards",
+            "media": "content protection and DRM controls",
+            "energy": "infrastructure security controls",
+            "other": "general security best practices"
+          }
+        }
+      ]
+    },
+    {
+      "id": "organization_scale",
+      "name": "Organization Scale",
+      "order": 2,
+      "description": "Size and complexity determination",
+      "questions": [
+        {
+          "id": "employee_count",
+          "text": "How many employees does your organization have?",
+          "type": "discovery",
+          "required": true,
+          "stores_as": "employee_count",
+          "help_text": "Helps determine appropriate account structure and support requirements",
+          "inference": {
+            "constraint": "enum",
+            "valid_values": ["under_1000", "1000_10000", "10000_50000", "over_50000"],
+            "hint": "Classify by employee count: <1000 → under_1000, 1000-10000 → 1000_10000, 10000-50000 → 10000_50000, >50000 → over_50000"
+          },
+          "presentation_template": "With {{employee_description}}, I classify this as **{{scale_label}}** which means {{infrastructure_note}}.",
+          "scale_labels": {
+            "under_1000": "small enterprise (<1,000 employees)",
+            "1000_10000": "medium enterprise (1,000-10,000 employees)",
+            "10000_50000": "large enterprise (10,000-50,000 employees)",
+            "over_50000": "very large enterprise (50,000+ employees)"
+          },
+          "infrastructure_notes": {
+            "under_1000": "streamlined account structure with essential infrastructure",
+            "1000_10000": "comprehensive account structure with dedicated infrastructure accounts",
+            "10000_50000": "complex account structure with business unit separation",
+            "over_50000": "highly distributed account structure with regional and BU organization"
+          }
+        },
+        {
+          "id": "account_count",
+          "text": "How many AWS accounts do you anticipate managing?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "1-10", "label": "1-10 accounts"},
+            {"value": "11-50", "label": "11-50 accounts"},
+            {"value": "51-100", "label": "51-100 accounts"},
+            {"value": "100-500", "label": "100-500 accounts"},
+            {"value": "500+", "label": "500+ accounts"}
+          ],
+          "stores_as": "anticipated_account_count",
+          "help_text": "Determines account vending and governance automation requirements"
+        },
+        {
+          "id": "geographic_distribution",
+          "text": "What is your geographic distribution?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "single_country", "label": "Single country operations"},
+            {"value": "regional", "label": "Regional (e.g., North America, Europe)"},
+            {"value": "multi_regional", "label": "Multi-regional (2-3 regions)"},
+            {"value": "global", "label": "Global (4+ regions)"}
+          ],
+          "stores_as": "geographic_distribution",
+          "help_text": "Determines multi-region networking and compliance requirements"
+        }
+      ]
+    },
+    {
+      "id": "compliance_regulatory",
+      "name": "Compliance and Regulatory",
+      "order": 3,
+      "description": "Regulatory frameworks and data privacy requirements",
+      "questions": [
+        {
+          "id": "regulatory_frameworks",
+          "text": "Which regulatory frameworks apply to your organization?",
+          "type": "multiple_choice",
+          "required": true,
+          "options": [
+            {"value": "SOX", "label": "SOX (Sarbanes-Oxley)"},
+            {"value": "PCI_DSS", "label": "PCI DSS (Payment Card Industry)"},
+            {"value": "GDPR", "label": "GDPR (General Data Protection Regulation)"},
+            {"value": "CCPA", "label": "CCPA/CPRA (California Privacy)"},
+            {"value": "HIPAA", "label": "HIPAA (Healthcare)"},
+            {"value": "SOC2", "label": "SOC 2 (Service Organization Controls)"},
+            {"value": "ISO27001", "label": "ISO 27001"},
+            {"value": "None", "label": "No specific frameworks"}
+          ],
+          "stores_as": "regulatory_frameworks",
+          "help_text": "Select all that apply - determines Security Hub standards and controls"
+        },
+        {
+          "id": "data_privacy_regions",
+          "text": "In which regions do you need to address data privacy regulations?",
+          "type": "multiple_choice",
+          "required": true,
+          "options": [
+            {"value": "north_america", "label": "North America"},
+            {"value": "eu_uk", "label": "European Union / UK"},
+            {"value": "asia_pacific", "label": "Asia Pacific"},
+            {"value": "global", "label": "Global compliance approach"}
+          ],
+          "stores_as": "data_privacy_regions",
+          "help_text": "Determines data residency and cross-border transfer controls"
+        },
+        {
+          "id": "sensitive_data_types",
+          "text": "What types of sensitive data will you process?",
+          "type": "multiple_choice",
+          "required": true,
+          "options": [
+            {"value": "pii", "label": "Personally Identifiable Information (PII)"},
+            {"value": "payment", "label": "Payment card data"},
+            {"value": "health", "label": "Protected health information"},
+            {"value": "financial", "label": "Financial records"},
+            {"value": "ip", "label": "Intellectual property"},
+            {"value": "customer", "label": "Customer data"},
+            {"value": "employee", "label": "Employee data"}
+          ],
+          "stores_as": "sensitive_data_types",
+          "help_text": "Determines encryption, logging, and data protection requirements"
+        }
+      ]
+    },
+    {
+      "id": "operational_model",
+      "name": "Operational Model",
+      "order": 4,
+      "description": "IT structure and cloud operating model",
+      "questions": [
+        {
+          "id": "it_structure",
+          "text": "How is your IT organization structured?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "centralized", "label": "Centralized IT"},
+            {"value": "federated", "label": "Federated IT with central governance"},
+            {"value": "decentralized", "label": "Decentralized IT (business unit autonomy)"},
+            {"value": "hybrid", "label": "Hybrid model"}
+          ],
+          "stores_as": "it_structure",
+          "help_text": "Determines account organization and delegation model"
+        },
+        {
+          "id": "cloud_team_structure",
+          "text": "How is your cloud team structured?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "central", "label": "Central cloud team providing services"},
+            {"value": "ccoe", "label": "Cloud Center of Excellence (CCoE)"},
+            {"value": "embedded", "label": "Embedded cloud teams in business units"},
+            {"value": "platform", "label": "Cloud platform team with self-service"},
+            {"value": "evolving", "label": "Still evolving"}
+          ],
+          "stores_as": "cloud_team_structure",
+          "help_text": "Determines governance and support model"
+        },
+        {
+          "id": "cloud_operating_model",
+          "text": "What is your preferred cloud operating model?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "centralized", "label": "Fully centralized"},
+            {"value": "delegated", "label": "Centralized governance with delegated operations"},
+            {"value": "federated", "label": "Federated (guardrails with BU autonomy)"},
+            {"value": "decentralized", "label": "Fully decentralized"}
+          ],
+          "stores_as": "cloud_operating_model",
+          "help_text": "Determines SCPs, guardrails, and delegation boundaries"
+        },
+        {
+          "id": "cloud_maturity",
+          "text": "What's your team's AWS/cloud experience and maturity?",
+          "type": "discovery",
+          "required": true,
+          "stores_as": "cloud_maturity",
+          "help_text": "Describe your cloud journey and current capabilities",
+          "inference": {
+            "constraint": "enum",
+            "valid_values": ["beginning", "developing", "advancing", "mature", "leading"],
+            "hint": "Classify cloud maturity: 'just started/exploring/new to cloud' → beginning, 'some workloads/building capabilities' → developing, 'established governance/scaling adoption' → advancing, 'optimizing/cloud-native' → mature, 'driving innovation/best practices' → leading"
+          },
+          "presentation_template": "Based on {{maturity_description}}, I classify your maturity as **{{level_label}}**. This means {{automation_note}}.",
+          "level_labels": {
+            "beginning": "Beginning/Exploring",
+            "developing": "Developing",
+            "advancing": "Advancing",
+            "mature": "Mature",
+            "leading": "Leading"
+          },
+          "automation_notes": {
+            "beginning": "we'll use proven patterns with comprehensive documentation",
+            "developing": "we'll include automation while maintaining visibility",
+            "advancing": "we can use advanced automation and self-service capabilities",
+            "mature": "we'll enable sophisticated DevOps and GitOps patterns",
+            "leading": "we can implement cutting-edge cloud-native architectures"
+          }
+        }
+      ]
+    },
+    {
+      "id": "account_structure",
+      "name": "Account Structure",
+      "order": 5,
+      "description": "Infrastructure accounts and organizational units",
+      "questions": [
+        {
+          "id": "need_network_account",
+          "text": "Do you need a dedicated Network account?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "network_account_enabled",
+          "help_text": "Strongly recommended for enterprise - centralized network management"
+        },
+        {
+          "id": "need_sharedservices_account",
+          "text": "Do you need a SharedServices account?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "sharedservices_account_enabled",
+          "help_text": "Recommended for hosting shared resources like Active Directory, DNS"
+        },
+        {
+          "id": "need_monitoring_account",
+          "text": "Do you need a Monitoring account?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "monitoring_account_enabled",
+          "help_text": "Recommended for centralized observability and SIEM integration"
+        },
+        {
+          "id": "organizational_units",
+          "text": "Beyond the standard OUs (Infrastructure, Workloads, Sandbox, Exceptions, Development, Production — Security is set up by Control Tower), what additional OUs do you need?",
+          "type": "text",
+          "required": false,
+          "stores_as": "additional_organizational_units",
+          "help_text": "Comma-separated list (e.g., 'Development, Production, BusinessUnit-A')"
+        }
+      ]
+    },
+    {
+      "id": "network_architecture",
+      "name": "Network Architecture",
+      "order": 6,
+      "description": "Networking and connectivity requirements",
+      "questions": [
+        {
+          "id": "hybrid_connectivity",
+          "text": "What are your on-premises connectivity requirements?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "vpn", "label": "VPN connectivity only"},
+            {"value": "direct_connect", "label": "Direct Connect to one or more regions"},
+            {"value": "global_transit", "label": "Global transit network across regions"},
+            {"value": "none", "label": "No direct connectivity required"}
+          ],
+          "stores_as": "hybrid_connectivity",
+          "help_text": "Determines hybrid networking architecture"
+        },
+        {
+          "id": "multi_region_networking",
+          "text": "What are your multi-region networking requirements?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "single", "label": "Single region operations"},
+            {"value": "independent", "label": "Multi-region but independent"},
+            {"value": "connected", "label": "Multi-region with cross-region communication"},
+            {"value": "global_lb", "label": "Global load balancing and failover"},
+            {"value": "edge", "label": "Edge computing requirements"}
+          ],
+          "stores_as": "multi_region_networking",
+          "help_text": "Determines Transit Gateway and network architecture complexity"
+        },
+        {
+          "id": "inspection_vpc",
+          "text": "Do you need centralized network inspection with AWS Network Firewall?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "inspection_vpc_enabled",
+          "help_text": "Recommended for enterprise - centralized network security"
+        },
+        {
+          "id": "delete_default_vpcs",
+          "text": "Should default VPCs be deleted?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "delete_default_vpcs",
+          "help_text": "Recommended - removes insecure default configurations"
+        },
+        {
+          "id": "enable_hybrid_dns",
+          "text": "Do you want to deploy hybrid DNS (Route 53 Resolver) to forward DNS between AWS and your on-premises network?",
+          "type": "yes_no",
+          "required": true,
+          "default": false,
+          "stores_as": "route53_resolver_enabled",
+          "depends_on": {
+            "question_id": "need_network_account",
+            "answer_value": true
+          },
+          "help_text": "Deploys inbound/outbound Route 53 Resolver endpoints in the Network account with a FORWARD rule to your on-prem DNS, shared org-wide. Requires a dedicated Network account. Only enable if you have on-premises DNS servers to integrate with. Cost: ~$0.125/hr per resolver endpoint ENI (two ENIs per endpoint) plus $0.40 per million queries."
+        },
+        {
+          "id": "hybrid_dns_outbound_domains",
+          "text": "Which on-premises DNS domains should be forwarded from AWS? Enter a comma-separated list (e.g. corp.example.com, internal.example.com).",
+          "type": "text",
+          "required": true,
+          "stores_as": "route53_resolver_outbound_domains",
+          "depends_on": {
+            "question_id": "enable_hybrid_dns",
+            "answer_value": true
+          },
+          "help_text": "DNS queries for these domains are forwarded from AWS to your on-premises DNS servers via the outbound resolver endpoint."
+        },
+        {
+          "id": "hybrid_dns_onprem_servers",
+          "text": "What are your on-premises DNS server IP addresses? Enter a comma-separated list (e.g. 192.168.1.10, 192.168.1.11).",
+          "type": "text",
+          "required": true,
+          "stores_as": "route53_resolver_on_prem_dns_servers",
+          "depends_on": {
+            "question_id": "enable_hybrid_dns",
+            "answer_value": true
+          },
+          "help_text": "The target DNS servers the FORWARD rule sends queries to. Must be reachable from the Network account VPC over your hybrid connection."
+        },
+        {
+          "id": "hybrid_dns_allowed_cidrs",
+          "text": "Which source CIDR ranges may send DNS queries to the inbound resolver? Enter a comma-separated list (e.g. 192.168.0.0/16, 10.0.0.0/8).",
+          "type": "text",
+          "required": true,
+          "stores_as": "route53_resolver_allowed_source_cidrs",
+          "depends_on": {
+            "question_id": "enable_hybrid_dns",
+            "answer_value": true
+          },
+          "help_text": "On-premises networks allowed to resolve AWS private DNS via the inbound resolver endpoint's security group."
+        }
+      ]
+    },
+    {
+      "id": "security_controls",
+      "name": "Security Controls",
+      "order": 7,
+      "description": "Security operations and automation",
+      "questions": [
+        {
+          "id": "security_operations",
+          "text": "What is your security operations approach?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "in_house_soc", "label": "In-house Security Operations Center (SOC)"},
+            {"value": "mssp", "label": "Managed Security Service Provider (MSSP)"},
+            {"value": "hybrid", "label": "Hybrid (internal and external)"},
+            {"value": "distributed", "label": "Distributed by business unit"},
+            {"value": "building", "label": "Currently building capabilities"}
+          ],
+          "stores_as": "security_operations",
+          "help_text": "Determines security tool integration and alerting"
+        },
+        {
+          "id": "security_automation_level",
+          "text": "What level of security automation have you implemented?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "manual", "label": "Limited/manual processes"},
+            {"value": "some_checks", "label": "Some automated security checks"},
+            {"value": "automated_remediation", "label": "Automated remediation"},
+            {"value": "security_as_code", "label": "Comprehensive security as code"},
+            {"value": "advanced", "label": "Advanced threat detection and response"}
+          ],
+          "stores_as": "security_automation_level",
+          "help_text": "Determines automation and response capabilities"
+        },
+        {
+          "id": "prevent_iam_users",
+          "text": "Should IAM user creation be prevented (SSO-only)?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "prevent_iam_users",
+          "help_text": "Recommended for enterprise - enforces SSO/Identity Center"
+        },
+        {
+          "id": "prevent_public_s3",
+          "text": "Should public S3 buckets be prevented?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "prevent_public_s3",
+          "help_text": "Recommended - blocks publicly accessible buckets"
+        },
+        {
+          "id": "restrict_regions",
+          "text": "Do you want to restrict which AWS regions can be used?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "restrict_regions",
+          "help_text": "Recommended for compliance and cost control"
+        },
+        {
+          "id": "allowed_regions",
+          "text": "Which geographic areas should be allowed?",
+          "type": "discovery",
+          "required": true,
+          "stores_as": "allowed_regions",
+          "depends_on": {
+            "question_id": "restrict_regions",
+            "answer_value": true
+          },
+          "help_text": "Describe geographic requirements - I'll map to AWS regions. Important: these must be a subset of the regions your existing Control Tower landing zone already governs - org-wide StackSets (e.g. EBS encryption) cannot deploy to a region Control Tower does not govern. Check your governed regions in the Control Tower console (Landing zone settings) or via 'aws controltower get-landing-zone'.",
+          "inference": {
+            "constraint": "aws_region_array",
+            "hint": "Map geographic descriptions to AWS region code arrays. 'Europe' or 'EU' → [eu-west-1, eu-west-2, eu-central-1, eu-north-1]. 'US' or 'United States' → [us-east-1, us-east-2, us-west-1, us-west-2]. 'Asia Pacific' or 'APAC' → [ap-southeast-1, ap-southeast-2, ap-south-1, ap-northeast-1]. Include home region. Be inclusive - if user says 'Europe', include all European regions.",
+            "validation_note": "Must output array of valid AWS region codes"
+          },
+          "presentation_template": "Based on '{{user_description}}', I'll allow: {{region_list}} ({{region_count}} regions)."
+        }
+      ]
+    },
+    {
+      "id": "financial_management",
+      "name": "Financial Management",
+      "order": 8,
+      "description": "Budget alerts and cost controls",
+      "questions": [
+        {
+          "id": "monthly_budget",
+          "text": "What is your expected monthly AWS spend (USD)?",
+          "type": "number",
+          "required": true,
+          "validation": {
+            "min": 1000,
+            "max": 10000000
+          },
+          "stores_as": "monthly_budget",
+          "help_text": "Used for budget configuration and alerts"
+        },
+        {
+          "id": "budget_alerts",
+          "text": "Enable budget alerts at 80% threshold?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "budget_alerts_enabled",
+          "help_text": "Proactive notification before overspending"
+        },
+        {
+          "id": "alert_email",
+          "text": "Email address for budget alerts?",
+          "type": "email",
+          "required": true,
+          "stores_as": "budget_alert_email",
+          "depends_on": {
+            "question_id": "budget_alerts",
+            "answer_value": true
+          },
+          "help_text": "Where to send budget notifications"
+        }
+      ]
+    },
+    {
+      "id": "migration_strategy",
+      "name": "Migration and Modernization",
+      "order": 9,
+      "description": "Application migration approach",
+      "questions": [
+        {
+          "id": "cloud_adoption_driver",
+          "text": "What is your primary driver for cloud adoption?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "datacenter_exit", "label": "Data center exit"},
+            {"value": "modernization", "label": "Application modernization"},
+            {"value": "agility", "label": "Business agility/innovation"},
+            {"value": "cost", "label": "Cost reduction"},
+            {"value": "scale", "label": "Scalability/global expansion"}
+          ],
+          "stores_as": "cloud_adoption_driver",
+          "help_text": "Helps prioritize landing zone features"
+        },
+        {
+          "id": "migration_approach",
+          "text": "What is your general migration approach?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "lift_shift", "label": "Lift-and-shift (rehost)"},
+            {"value": "selective", "label": "Selective modernization"},
+            {"value": "progressive", "label": "Progressive modernization over time"},
+            {"value": "rebuild", "label": "Rebuild as cloud-native"},
+            {"value": "mixed", "label": "Mixed approach by application"}
+          ],
+          "stores_as": "migration_approach",
+          "help_text": "Determines automation and tooling needs"
+        },
+        {
+          "id": "modernization_strategy",
+          "text": "What is your application modernization strategy?",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "maintain", "label": "Maintain existing architectures"},
+            {"value": "incremental", "label": "Incremental modernization (containers)"},
+            {"value": "microservices", "label": "Decompose to microservices"},
+            {"value": "serverless", "label": "Adopt serverless where possible"},
+            {"value": "no_strategy", "label": "No formal strategy yet"}
+          ],
+          "stores_as": "modernization_strategy",
+          "help_text": "Informs compute and architecture recommendations"
+        }
+      ]
+    },
+    {
+      "id": "enterprise_integration",
+      "name": "Enterprise Integration",
+      "order": 10,
+      "description": "Integration with existing enterprise systems",
+      "questions": [
+        {
+          "id": "enterprise_systems",
+          "text": "Which enterprise systems need AWS integration?",
+          "type": "multiple_choice",
+          "required": true,
+          "options": [
+            {"value": "identity", "label": "Enterprise identity provider (AD, Okta)"},
+            {"value": "itsm", "label": "IT service management (ServiceNow)"},
+            {"value": "monitoring", "label": "Enterprise monitoring solutions"},
+            {"value": "siem", "label": "SIEM/Security operations tools"},
+            {"value": "data_warehouse", "label": "Enterprise data warehouse/lake"},
+            {"value": "erp", "label": "ERP systems"},
+            {"value": "none", "label": "None at this time"}
+          ],
+          "stores_as": "enterprise_systems",
+          "help_text": "Determines integration architecture and APIs"
+        },
+        {
+          "id": "capability_building",
+          "text": "How will you build cloud capabilities?",
+          "type": "multiple_choice",
+          "required": true,
+          "options": [
+            {"value": "training", "label": "Training existing staff"},
+            {"value": "hiring", "label": "Hiring experienced professionals"},
+            {"value": "partners", "label": "Leveraging partners/consultants"},
+            {"value": "managed_services", "label": "Managed services approach"}
+          ],
+          "stores_as": "capability_building",
+          "help_text": "Determines support and documentation needs"
+        }
+      ]
+    },
+    {
+      "id": "logging_monitoring",
+      "name": "Logging and Monitoring",
+      "order": 11,
+      "description": "Centralized logging and observability",
+      "questions": [
+        {
+          "id": "enable_flow_logs",
+          "text": "Enable VPC Flow Logs?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "flow_logs_enabled",
+          "help_text": "Recommended for security and troubleshooting"
+        },
+        {
+          "id": "flow_log_destination",
+          "text": "VPC Flow Logs for the centralized Inspection/Egress VPC are delivered to the central S3 bucket in the Log Archive account. Confirm S3 as the destination.",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            {"value": "s3", "label": "S3 (central Log Archive bucket)"}
+          ],
+          "stores_as": "flow_log_destination",
+          "depends_on": {
+            "question_id": "enable_flow_logs",
+            "answer_value": true
+          },
+          "help_text": "The landing zone centralizes flow logs to the Log Archive S3 bucket, which is cost-effective for long-term storage. CloudWatch Logs delivery is not offered for the centralized Inspection/Egress VPC; enable CloudWatch flow logs per workload VPC/account after deployment if you need real-time queries."
+        },
+        {
+          "id": "log_retention",
+          "text": "How long should logs be retained?",
+          "type": "single_choice",
+          "required": true,
+          "default": "365",
+          "options": [
+            {"value": "90", "label": "90 days"},
+            {"value": "365", "label": "1 year"},
+            {"value": "2555", "label": "7 years (compliance)"}
+          ],
+          "stores_as": "log_retention_days",
+          "help_text": "Longer retention for compliance and forensics"
+        }
+      ]
+    },
+    {
+      "id": "tagging",
+      "name": "Tagging Requirements",
+      "order": 12,
+      "description": "Resource tagging and cost allocation",
+      "questions": [
+        {
+          "id": "enforce_tags",
+          "text": "Enforce required tags on resources?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "enforce_tagging",
+          "help_text": "Strongly recommended for enterprise cost allocation"
+        },
+        {
+          "id": "required_tags",
+          "text": "Which tags should be required?",
+          "type": "multiple_choice",
+          "required": true,
+          "options": [
+            {"value": "Environment", "label": "Environment (Dev/Staging/Prod)"},
+            {"value": "CostCenter", "label": "Cost Center"},
+            {"value": "Project", "label": "Project"},
+            {"value": "Application", "label": "Application"},
+            {"value": "Owner", "label": "Owner"},
+            {"value": "DataClassification", "label": "Data Classification"}
+          ],
+          "stores_as": "required_tags",
+          "depends_on": {
+            "question_id": "enforce_tags",
+            "answer_value": true
+          },
+          "help_text": "Select all required tags for compliance and cost tracking"
+        }
+      ]
+    },
+    {
+      "id": "backup_policies",
+      "name": "Backup Policies",
+      "order": 13,
+      "description": "Automated backup configuration",
+      "questions": [
+        {
+          "id": "enable_backups",
+          "text": "Enable automated backup policies?",
+          "type": "yes_no",
+          "required": true,
+          "default": true,
+          "stores_as": "backup_enabled",
+          "help_text": "Strongly recommended for enterprise data protection"
+        },
+        {
+          "id": "backup_frequency",
+          "text": "Backup frequency?",
+          "type": "single_choice",
+          "required": true,
+          "default": "daily",
+          "options": [
+            {"value": "daily", "label": "Daily"},
+            {"value": "hourly", "label": "Hourly (critical workloads)"}
+          ],
+          "stores_as": "backup_frequency",
+          "depends_on": {
+            "question_id": "enable_backups",
+            "answer_value": true
+          },
+          "help_text": "Daily for most workloads, hourly for critical systems"
+        },
+        {
+          "id": "backup_retention",
+          "text": "Backup retention period?",
+          "type": "single_choice",
+          "required": true,
+          "default": "90",
+          "options": [
+            {"value": "30", "label": "30 days"},
+            {"value": "90", "label": "90 days"},
+            {"value": "365", "label": "1 year"},
+            {"value": "2555", "label": "7 years"}
+          ],
+          "stores_as": "backup_retention_days",
+          "depends_on": {
+            "question_id": "enable_backups",
+            "answer_value": true
+          },
+          "help_text": "Based on RPO/RTO and compliance requirements"
+        }
+      ]
+    },
+    {
+      "id": "email_addresses",
+      "name": "Account Email Addresses",
+      "order": 14,
+      "description": "Email configuration for AWS accounts. IMPORTANT: Each email must be globally unique across ALL of AWS. Plus-addressed emails (user+tag@domain.com) often collide. Use dedicated mailboxes or distribution lists. Failed account creation leaves retained (orphaned) accounts that cannot be rolled back.",
+      "questions": [
+        {
+          "id": "email_domain",
+          "text": "Organization email domain?",
+          "type": "text",
+          "required": true,
+          "validation": {
+            "pattern": "^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,}$"
+          },
+          "stores_as": "email_domain",
+          "help_text": "e.g., company.com - for AWS account root emails"
+        },
+        {
+          "id": "email_management",
+          "text": "Management account email?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_management",
+          "help_text": "Existing AWS account email"
+        },
+        {
+          "id": "email_logarchive",
+          "text": "Log Archive account email?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_logarchive",
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails as they often collide. Use a dedicated mailbox."
+        },
+        {
+          "id": "email_audit",
+          "text": "Audit account email?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_audit",
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails as they often collide. Use a dedicated mailbox."
+        },
+        {
+          "id": "email_network",
+          "text": "Network account email?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_network",
+          "depends_on": {
+            "question_id": "need_network_account",
+            "answer_value": true
+          },
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails. Use a dedicated mailbox."
+        },
+        {
+          "id": "email_sharedservices",
+          "text": "SharedServices account email?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_sharedservices",
+          "depends_on": {
+            "question_id": "need_sharedservices_account",
+            "answer_value": true
+          },
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails. Use a dedicated mailbox."
+        },
+        {
+          "id": "email_monitoring",
+          "text": "Monitoring account email?",
+          "type": "email",
+          "required": true,
+          "stores_as": "email_monitoring",
+          "depends_on": {
+            "question_id": "need_monitoring_account",
+            "answer_value": true
+          },
+          "help_text": "Must be globally unique across AWS. Avoid plus-addressed emails. Use a dedicated mailbox."
+        }
+      ]
+    }
+  ]
+}

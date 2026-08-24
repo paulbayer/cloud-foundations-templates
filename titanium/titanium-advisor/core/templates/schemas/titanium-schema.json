@@ -1,0 +1,1150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Titanium Landing Zone Configuration",
+  "description": "Schema for AWS Landing Zone Accelerator (LZA) Titanium.yaml configuration - TitaniumV2 format",
+  "type": "object",
+  "required": [
+    "homeRegion",
+    "enabledRegions",
+    "managementAccountAccessRole",
+    "controlTower",
+    "organization",
+    "logging",
+    "centralSecurityServices",
+    "accounts",
+    "network"
+  ],
+  "properties": {
+    "homeRegion": {
+      "type": "string",
+      "description": "Primary AWS region for the landing zone",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "enabledRegions": {
+      "type": "array",
+      "description": "List of AWS regions enabled for the organization",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9-]+$"
+      },
+      "minItems": 1
+    },
+    "managementAccountAccessRole": {
+      "type": "string",
+      "description": "IAM role for management account access",
+      "default": "AWSControlTowerExecution"
+    },
+    "controlTower": {
+      "type": "object",
+      "required": ["enable"],
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "description": "Enable AWS Control Tower"
+        },
+        "landingZone": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string",
+              "description": "Control Tower Landing Zone version"
+            },
+            "logging": {
+              "type": "object",
+              "properties": {
+                "controlTowerOrganizationTrail": {"type": "boolean"},
+                "loggingBucketRetentionDays": {"type": "number"},
+                "accessLoggingBucketRetentionDays": {"type": "number"},
+                "organizationTrail": {"type": "boolean"}
+              }
+            },
+            "security": {
+              "type": "object",
+              "properties": {
+                "enableIdentityCenterAccess": {"type": "boolean"},
+                "denyRegion": {"type": "boolean"}
+              }
+            },
+            "network": {
+              "type": "object",
+              "properties": {
+                "networkFactoryConfiguration": {
+                  "type": ["object", "null"]
+                }
+              }
+            }
+          }
+        },
+        "controls": {
+          "type": "array",
+          "description": "List of Control Tower controls to enable",
+          "items": {
+            "type": "object",
+            "properties": {
+              "identifier": {"type": "string"},
+              "enable": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "organization": {
+      "type": "object",
+      "required": ["enable"],
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "description": "Enable AWS Organizations"
+        },
+        "organizationalUnits": {
+          "type": "array",
+          "description": "Organizational unit structure",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "accounts": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            }
+          }
+        },
+        "serviceControlPolicies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "description", "policy", "type"],
+            "properties": {
+              "name": {"type": "string"},
+              "description": {"type": "string"},
+              "policy": {"type": "string"},
+              "type": {
+                "type": "string",
+                "enum": ["customerManaged", "awsManaged"]
+              },
+              "deploymentTargets": {
+                "type": "object",
+                "properties": {
+                  "organizationalUnits": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "taggingPolicies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "description": {"type": "string"},
+              "policy": {"type": "string"},
+              "deploymentTargets": {
+                "type": "object",
+                "properties": {
+                  "organizationalUnits": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "backupPolicies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "enable": {"type": "boolean"},
+              "description": {"type": "string"},
+              "policy": {"type": "string"},
+              "deploymentTargets": {
+                "type": "object",
+                "properties": {
+                  "organizationalUnits": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "iamPasswordPolicy": {
+      "type": "object",
+      "properties": {
+        "allowUsersToChangePassword": {"type": "boolean"},
+        "hardExpiry": {"type": "boolean"},
+        "requireUppercaseCharacters": {"type": "boolean"},
+        "requireLowercaseCharacters": {"type": "boolean"},
+        "requireSymbols": {"type": "boolean"},
+        "requireNumbers": {"type": "boolean"},
+        "minimumPasswordLength": {"type": "number"},
+        "passwordReusePrevention": {"type": "number"},
+        "maxPasswordAge": {"type": "number"}
+      }
+    },
+    "accessAnalyzer": {
+      "type": "object",
+      "properties": {
+        "externalAccess": {"type": "boolean"},
+        "unusedAccess": {"type": "boolean"}
+      }
+    },
+    "iamIdentityCenter": {
+      "type": "object",
+      "properties": {
+        "delegatedAdminAccount": {
+          "type": "string",
+          "description": "Account for Identity Center delegation"
+        },
+        "mfaConfiguration": {
+          "type": "object",
+          "properties": {
+            "mfaRequired": {
+              "type": "boolean",
+              "description": "Require MFA for Identity Center"
+            }
+          }
+        },
+        "enableABAC": {
+          "type": "boolean",
+          "description": "Enable Attribute-Based Access Control"
+        },
+        "externalProvider": {
+          "type": "object",
+          "description": "External identity provider configuration",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable external provider integration"
+            },
+            "externalProvider": {
+              "type": "string",
+              "description": "External provider name",
+              "enum": ["Okta", "Entra", "PingIdentity", "Other"]
+            },
+            "samlIntegration": {
+              "type": "boolean",
+              "description": "Enable SAML integration"
+            },
+            "SCIMIntegration": {
+              "type": "boolean",
+              "description": "Enable SCIM integration"
+            }
+          }
+        },
+        "commonRoles": {
+          "type": "array",
+          "description": "Common IAM Identity Center roles",
+          "items": {
+            "type": "object",
+            "required": ["name", "description", "policies"],
+            "properties": {
+              "name": {"type": "string"},
+              "description": {"type": "string"},
+              "policies": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "sessionDuration": {
+                "type": "number",
+                "description": "Session duration in seconds",
+                "minimum": 3600,
+                "maximum": 43200,
+                "default": 3600
+              }
+            }
+          }
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "required": ["account", "cloudtrail"],
+      "properties": {
+        "account": {
+          "type": "string",
+          "description": "Account name for centralized logging"
+        },
+        "cloudtrail": {
+          "type": "object",
+          "properties": {
+            "managementEventTrail": {
+              "type": "object",
+              "properties": {
+                "enable": {"type": "boolean"},
+                "organizationTrail": {"type": "boolean"},
+                "organizationTrailSettings": {
+                  "type": "object",
+                  "properties": {
+                    "multiRegionTrail": {"type": "boolean"},
+                    "globalServiceEvents": {"type": "boolean"},
+                    "managementEvents": {"type": "boolean"},
+                    "sendToCloudWatchLogs": {"type": "boolean"},
+                    "apiErrorRateInsight": {"type": "boolean"},
+                    "apiCallRateInsight": {"type": "boolean"}
+                  }
+                }
+              }
+            },
+            "dataEventTrail": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string"},
+                  "regions": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  },
+                  "deploymentTargets": {
+                    "type": "object",
+                    "properties": {
+                      "organizationalUnits": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                      }
+                    }
+                  },
+                  "settings": {
+                    "type": "object",
+                    "properties": {
+                      "multiRegionTrail": {"type": "boolean"},
+                      "globalServiceEvents": {"type": "boolean"},
+                      "managementEvents": {"type": "boolean"},
+                      "s3": {"type": "array"},
+                      "sendToCloudWatchLogs": {"type": "boolean"},
+                      "apiErrorRateInsight": {"type": "boolean"},
+                      "apiCallRateInsight": {"type": "boolean"}
+                    }
+                  }
+                }
+              }
+            },
+            "accountTrails": {
+              "type": "array",
+              "items": {"type": "object"}
+            }
+          }
+        },
+        "sessionManager": {
+          "type": "object",
+          "properties": {
+            "sendToCloudWatchLogs": {"type": "boolean"},
+            "sendToS3": {"type": "boolean"},
+            "lifecycleRules": {"type": "array"},
+            "attachPolicyToIamRoles": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "cloudWatchLogGroupDefaultRetentionWeeks": {"type": "number"},
+        "centralLogBucketsAccount": {
+          "type": "object",
+          "properties": {
+            "account": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "accountName": {"type": "string"},
+                  "logAccountControls": {"type": "array"}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "vpcFlowLogs": {
+      "type": "object",
+      "properties": {
+        "trafficType": {
+          "type": "string",
+          "enum": ["ALL", "ACCEPT", "REJECT"]
+        },
+        "accounts": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "regions": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "maxAggregationInterval": {"type": "number"},
+        "destinations": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "destinationsConfig": {
+          "type": "object",
+          "properties": {
+            "cloudWatchLogs": {
+              "type": "object",
+              "properties": {
+                "retentionInDays": {"type": "number"}
+              }
+            }
+          }
+        },
+        "defaultFormat": {"type": "boolean"}
+      }
+    },
+    "snsTopics": {
+      "type": "object",
+      "properties": {
+        "deploymentTargets": {
+          "type": "object",
+          "properties": {
+            "organizationalUnits": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "emailAddresses": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "centralSecurityServices": {
+      "type": "object",
+      "properties": {
+        "delegatedAdminAccount": {
+          "type": "string",
+          "description": "Account name for delegated security administration"
+        },
+        "awsConfig": {
+          "type": "object",
+          "description": "AWS Config configuration for compliance monitoring - moved from root level for TitaniumV2",
+          "properties": {
+            "enableConfigurationRecorder": {
+              "type": "boolean",
+              "description": "Enable AWS Config recorder"
+            },
+            "enableDeliveryChannel": {
+              "type": "boolean",
+              "description": "Enable AWS Config delivery channel"
+            },
+            "enableGlobalResourceTypes": {
+              "type": "boolean",
+              "description": "Include global resource types in AWS Config (maps to IncludeGlobalResourceTypes parameter)",
+              "default": true
+            },
+            "deliveryChannelFrequency": {
+              "type": "string",
+              "enum": ["1hour", "3hours", "6hours", "12hours", "24hours"],
+              "description": "Frequency for AWS Config delivery channel (maps to Frequency parameter)",
+              "default": "24hours"
+            },
+            "resourceTypes": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Specific resource types to monitor (when AllSupported is false)",
+              "default": []
+            },
+            "ruleSets": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "deploymentTargets": {
+                    "type": "object",
+                    "properties": {
+                      "organizationalUnits": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                      }
+                    }
+                  },
+                  "rules": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["name", "identifier"],
+                      "properties": {
+                        "name": {"type": "string"},
+                        "identifier": {"type": "string"},
+                        "complianceResourceTypes": {
+                          "type": "array",
+                          "items": {"type": "string"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "ebsDefaultVolumeEncryption": {
+          "type": "object",
+          "properties": {
+            "enable": {"type": "boolean"},
+            "excludeRegions": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "s3PublicAccessBlock": {
+          "type": "object",
+          "properties": {
+            "enable": {"type": "boolean"},
+            "excludeAccounts": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "scpRevertChangesConfig": {
+          "type": "object",
+          "properties": {
+            "enable": {"type": "boolean"},
+            "snsTopicName": {"type": "string"}
+          }
+        },
+        "macie": {
+          "type": "object",
+          "properties": {
+            "enable": {"type": "boolean"},
+            "excludeRegions": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "policyFindingsPublishingFrequency": {
+              "type": "string",
+              "enum": ["FIFTEEN_MINUTES", "ONE_HOUR", "SIX_HOURS"]
+            },
+            "publishSensitiveDataFindings": {"type": "boolean"},
+            "exportConfiguration": {
+              "type": "object",
+              "properties": {
+                "enable": {"type": "boolean"},
+                "destinationType": {
+                  "type": "string",
+                  "enum": ["S3"]
+                }
+              }
+            }
+          }
+        },
+        "guardduty": {
+          "type": "object",
+          "properties": {
+            "enable": {"type": "boolean"},
+            "excludeRegions": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "s3Protection": {
+              "type": "object",
+              "properties": {
+                "enable": {"type": "boolean"},
+                "excludeRegions": {
+                  "type": "array",
+                  "items": {"type": "string"}
+                }
+              }
+            },
+            "eksProtection": {"type": "boolean"},
+            "malwareProtection": {"type": "boolean"},
+            "exportConfiguration": {
+              "type": "object",
+              "properties": {
+                "enable": {"type": "boolean"},
+                "destinationType": {
+                  "type": "string",
+                  "enum": ["S3"]
+                },
+                "exportFrequency": {
+                  "type": "string",
+                  "enum": ["FIFTEEN_MINUTES", "ONE_HOUR", "SIX_HOURS"]
+                }
+              }
+            }
+          }
+        },
+        "auditManager": {
+          "type": "object",
+          "properties": {
+            "enable": {"type": "boolean"},
+            "excludeRegions": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "defaultReportsConfiguration": {
+              "type": "object",
+              "properties": {
+                "enable": {"type": "boolean"},
+                "destinationType": {
+                  "type": "string",
+                  "enum": ["S3"]
+                }
+              }
+            },
+            "lifecycleRules": {"type": "array"}
+          }
+        },
+        "detective": {
+          "type": "object",
+          "properties": {
+            "enable": {"type": "boolean"},
+            "excludeRegions": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "securityHub": {
+          "type": "object",
+          "properties": {
+            "enable": {
+              "type": "boolean",
+              "description": "Enable Security Hub"
+            },
+            "regionAggregation": {
+              "type": "boolean",
+              "description": "Enable Security Hub region aggregation"
+            },
+            "excludeRegions": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "standards": {
+              "type": "array",
+              "description": "Security Hub standards to enable (auto-mapped to template parameters for org configuration)",
+              "items": {
+                "type": "object",
+                "required": ["name", "enable"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Standard name",
+                    "enum": [
+                      "AWS Foundational Security Best Practices v1.0.0",
+                      "CIS AWS Foundations Benchmark v1.2.0",
+                      "CIS AWS Foundations Benchmark v1.4.0",
+                      "NIST Special Publication 800-53 Revision 5",
+                      "PCI DSS v3.2.1"
+                    ]
+                  },
+                  "enable": {
+                    "type": "boolean",
+                    "description": "Enable this standard"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cloudWatch": {
+      "type": "object",
+      "properties": {
+        "metricSets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "regions": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "deploymentTargets": {
+                "type": "object",
+                "properties": {
+                  "accounts": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                }
+              },
+              "metrics": {"type": "array"}
+            }
+          }
+        },
+        "alarmSets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "regions": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "deploymentTargets": {
+                "type": "object",
+                "properties": {
+                  "accounts": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                }
+              },
+              "alarms": {"type": "array"}
+            }
+          }
+        }
+      }
+    },
+    "accounts": {
+      "type": "object",
+      "properties": {
+        "mandatoryAccounts": {
+          "type": "array",
+          "description": "Required accounts (Management, LogArchive, Audit)",
+          "items": {
+            "$ref": "#/definitions/account"
+          }
+        },
+        "infrastructureAccounts": {
+          "type": "array",
+          "description": "Infrastructure accounts (SharedServices, Network, Monitoring)",
+          "items": {
+            "$ref": "#/definitions/account"
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "architectureType": {
+          "type": "string",
+          "description": "High-level network architecture type",
+          "enum": ["TGW", "CloudWan", "SharedVPC", "Hybrid"]
+        },
+        "defaultVpc": {
+          "type": "object",
+          "properties": {
+            "delete": {"type": "boolean"},
+            "excludeAccounts": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "standardArchitecture": {
+          "type": "object",
+          "properties": {
+            "centralizedNetworking": {"type": "boolean"},
+            "networkAccount": {"type": "string"},
+            "region": {"type": "string"},
+            "vpcs": {
+              "type": "object",
+              "properties": {
+                "endpointVpc": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {"type": "boolean"},
+                    "availabilityZones": {"type": "number"},
+                    "subnetsPerAZ": {"type": "number"},
+                    "centralEndpoints": {"type": "boolean"},
+                    "requiredEndpoints": {
+                      "type": "array",
+                      "items": {"type": "string"}
+                    }
+                  }
+                },
+                "inspectionVpc": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {"type": "boolean"},
+                    "availabilityZones": {"type": "number"},
+                    "subnetsPerAZ": {"type": "number"},
+                    "networkFirewall": {"type": "boolean"},
+                    "firewallPolicy": {"type": "string"}
+                  }
+                },
+                "workloadVpcs": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {"type": "boolean"},
+                    "availabilityZones": {"type": "number"},
+                    "subnetsPerAZ": {"type": "number"},
+                    "deploymentTargets": {
+                      "type": "object",
+                      "properties": {
+                        "organizational_units": {
+                          "type": "array",
+                          "items": {"type": "string"}
+                        },
+                        "accounts": {
+                          "type": "array",
+                          "items": {"type": "string"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "connectivity": {
+              "type": "object",
+              "description": "Network connectivity configuration",
+              "properties": {
+                "transitGateway": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Enable Transit Gateway"
+                    },
+                    "routeTableStructure": {
+                      "type": "string",
+                      "enum": ["flat", "segregated"],
+                      "description": "Transit Gateway route table architecture",
+                      "default": "segregated"
+                    },
+                    "routeTables": {
+                      "type": "array",
+                      "description": "Transit Gateway route table names",
+                      "items": {"type": "string"}
+                    }
+                  }
+                },
+                "hybridConnectivity": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Enable hybrid connectivity"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": ["DirectConnect", "VPN"],
+                      "description": "Type of hybrid connectivity"
+                    }
+                  }
+                },
+                "route53Resolver": {
+                  "type": "object",
+                  "description": "Route53 Resolver for hybrid DNS",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Enable Route53 Resolver endpoints"
+                    },
+                    "outboundDomains": {
+                      "type": "array",
+                      "description": "Domains to forward to on-premises DNS",
+                      "items": {"type": "string"}
+                    },
+                    "onPremDnsServers": {
+                      "type": "array",
+                      "description": "On-premises DNS server IPs",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"
+                      }
+                    },
+                    "allowedSourceCidrs": {
+                      "type": "array",
+                      "description": "CIDRs allowed to use resolver",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "ipam": {
+          "type": "object",
+          "description": "AWS IPAM configuration for centralized IP address management",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable AWS IPAM",
+              "default": true
+            },
+            "region": {
+              "type": "string",
+              "description": "Primary region for IPAM",
+              "pattern": "^[a-z0-9-]+$"
+            },
+            "operatingRegions": {
+              "type": "array",
+              "description": "Regions where IPAM will operate",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "minItems": 1
+            },
+            "pools": {
+              "type": "array",
+              "description": "IPAM pool definitions",
+              "items": {
+                "type": "object",
+                "required": ["name", "description"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Pool name"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Pool description"
+                  },
+                  "provisionedCidrs": {
+                    "type": "array",
+                    "description": "CIDR blocks provisioned to this pool",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+                    }
+                  },
+                  "locale": {
+                    "type": "string",
+                    "description": "AWS region for regional pool",
+                    "pattern": "^[a-z0-9-]+$"
+                  },
+                  "sourceIpamPool": {
+                    "type": "string",
+                    "description": "Source IPAM pool name"
+                  },
+                  "shareTargets": {
+                    "type": "object",
+                    "description": "RAM sharing configuration",
+                    "properties": {
+                      "organizationalUnits": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                      },
+                      "accounts": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "vpcs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "account", "region", "cidr"],
+            "properties": {
+              "name": {"type": "string"},
+              "account": {"type": "string"},
+              "region": {"type": "string"},
+              "cidr": {
+                "type": "string",
+                "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+              },
+              "enableDnsHostnames": {"type": "boolean"},
+              "enableDnsSupport": {"type": "boolean"},
+              "internetGateway": {"type": "boolean"},
+              "natGateways": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "subnet": {"type": "string"},
+                    "allocationId": {"type": "string"}
+                  }
+                }
+              },
+              "subnets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "availabilityZone", "cidr"],
+                  "properties": {
+                    "name": {"type": "string"},
+                    "availabilityZone": {"type": "string"},
+                    "cidr": {
+                      "type": "string",
+                      "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": ["Public", "Private", "Isolated"]
+                    },
+                    "mapPublicIpOnLaunch": {"type": "boolean"}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "transitGateways": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "account": {"type": "string"},
+              "region": {"type": "string"},
+              "asn": {"type": "number"},
+              "dnsSupport": {"type": "boolean"},
+              "multicast": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "cloudFinancialManagement": {
+      "type": "object",
+      "properties": {
+        "budgets": {
+          "type": "array",
+          "items": {"type": "object"}
+        },
+        "computeOptimizer": {
+          "type": "object",
+          "properties": {
+            "enable": {
+              "type": "boolean",
+              "description": "Enable AWS Compute Optimizer for the organization (free tier)"
+            }
+          }
+        },
+        "costOptimizationHub": {
+          "type": "object",
+          "properties": {
+            "enable": {
+              "type": "boolean",
+              "description": "Enable AWS Cost Optimization Hub for the organization (free tier)"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "account": {
+      "type": "object",
+      "required": ["name", "description", "email"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Account name (no spaces)"
+        },
+        "description": {
+          "type": "string",
+          "description": "Account description"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Root email address for the account"
+        },
+        "organizationalUnit": {
+          "type": "string",
+          "description": "OU where account should be placed"
+        }
+      }
+    },
+    "cidr": {
+      "type": "string",
+      "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$",
+      "description": "CIDR block notation"
+    },
+    "awsRegion": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "description": "AWS region identifier"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "network": {
+            "properties": {
+              "ipam": {
+                "properties": {
+                  "enabled": {"const": true}
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "network": {
+            "properties": {
+              "ipam": {
+                "required": ["region", "operatingRegions", "pools"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "network": {
+            "properties": {
+              "standardArchitecture": {
+                "properties": {
+                  "connectivity": {
+                    "properties": {
+                      "route53Resolver": {
+                        "properties": {
+                          "enabled": {"const": true}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "network": {
+            "properties": {
+              "standardArchitecture": {
+                "properties": {
+                  "connectivity": {
+                    "properties": {
+                      "route53Resolver": {
+                        "required": ["outboundDomains", "onPremDnsServers"]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

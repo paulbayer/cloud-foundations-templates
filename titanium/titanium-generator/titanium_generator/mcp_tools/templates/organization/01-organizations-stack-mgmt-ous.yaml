@@ -1,0 +1,734 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Organizational Units - Creates OUs and enrolls them into the Control Tower landing zone'
+
+Metadata:
+  Purpose: 'Create organizational units and register them with Control Tower via EnabledBaseline'
+  Author: 'Titanium Generator'
+  Version: '2.0.0'
+  DeploymentMethod: 'Direct deployment to Management Account only (NOT StackSet)'
+  Dependencies: 'AWS Organizations enabled AND Control Tower landing zone deployed (controltower/01). Deploy AFTER Control Tower.'
+  # The OU wiring in this template is GENERATED. The generator replaces the
+  # TITANIUM:BEGIN/END marker regions below with, per entry in
+  # organization.organizationalUnits: a {Name, LogicalId} entry in the discovery
+  # Lambda's OrganizationalUnits input and one output.
+  #
+  # The OUs themselves are adopted-or-created by the discovery Lambda (adopt an
+  # existing OU by name under the root, else create it) so the stack is idempotent
+  # on orgs where the OUs already exist (issue #78). The Lambda also writes each
+  # OU's ID SSM parameter with Overwrite=True. Creating an OU with AWS
+  # Organizations alone leaves it unmanaged: no guardrails, no baseline, invisible
+  # to the Control Tower console — enrolling it into the Control Tower baseline is
+  # what performs the enrollment. That enrollment is done by the discovery Lambda
+  # (adopt if already enabled, else fire EnableBaseline) rather than by native
+  # AWS::ControlTower::EnabledBaseline resources, which are not idempotent (#91).
+
+Parameters:
+  # SSM Parameter Store path prefix. This is the cross-stack contract consumed by
+  # 02-scps.yaml and 03-backup-policies.yaml, which resolve OU names to IDs by
+  # reading <prefix>/<ou-name-lowercased>-ou-id. Changing it here requires changing
+  # it in those templates too.
+  uSSMParameterPrefix:
+    Type: String
+    Default: "/titanium/organization/ou-ids"
+    Description: "SSM Parameter Store path prefix for OU ID exports"
+
+  # Name of the hub OU that the Control Tower landing zone created for its own
+  # service accounts (Log Archive / Audit). Under Landing Zone 4.0 the hub OU is
+  # declared in the CT manifest, not here, so this template only looks it up in
+  # order to publish its ID alongside the OUs it does own.
+  uHubOuName:
+    Type: String
+    Default: "Security"
+    Description: "Name of the Control Tower-created hub OU to discover and publish"
+    MinLength: 1
+    MaxLength: 68
+
+Resources:
+  # Lambda role for organization discovery and SSM parameter management
+  OrganizationDiscoveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Role name is <stack-name>-OrgDiscovery (not the reverse) so it stays under
+      # IAM's 64-char limit: 'Titanium-OrgDiscovery-<stackname>-Role' overflowed by
+      # 3 chars for the standard stack name Titanium-01-organizations-stack-mgmt-ous
+      # (67 chars) and failed CREATE immediately (issue #90).
+      RoleName: !Sub '${AWS::StackName}-OrgDiscovery'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OrganizationDiscoveryAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:ListRoots
+                  - organizations:DescribeOrganization
+                  - organizations:ListOrganizationalUnitsForParent
+                  # Adopt-or-create: the OUs are created here only when they do
+                  # not already exist under the root (see adopt_or_create_ou).
+                  - organizations:CreateOrganizationalUnit
+                Resource: '*'
+              # ListEnabledBaselines/ListBaselines resolve the Identity Center
+              # enabled-baseline ARN (account-specific, so it cannot be hardcoded)
+              # AND let the Lambda detect OUs that are already enrolled so it can
+              # adopt them instead of re-enrolling (issue #91). EnableBaseline enrolls
+              # the un-enrolled OUs; GetBaselineOperation/ResetEnabledBaseline
+              # serialize and re-attempt (issue #114 Round-3).
+              - Effect: Allow
+                Action:
+                  - controltower:ListEnabledBaselines
+                  - controltower:ListBaselines
+                  - controltower:EnableBaseline
+                  # Serialize baseline enrollment and re-attempt FAILED baselines
+                  # (issue #114): GetBaselineOperation lets the Lambda wait for one
+                  # operation to finish before starting the next (Control Tower
+                  # serializes baseline operations); ResetEnabledBaseline retries an
+                  # EnabledBaseline that is in a FAILED state.
+                  - controltower:GetBaselineOperation
+                  - controltower:ResetEnabledBaseline
+                Resource: '*'
+              # AWS Organizations SCP-management permissions required by the
+              # Control Tower baseline (issue #114 Round-4). The AWSControlTowerBaseline
+              # applies the mandatory preventive-guardrail SCPs to the target OU, and
+              # Control Tower performs that policy work using the *caller's* credentials
+              # (CloudTrail: organizations:CreatePolicy on a SERVICE_CONTROL_POLICY,
+              # made as this OrgDiscovery role with invokedBy=controltower.amazonaws.com).
+              # The AWS-managed AWSControlTowerServiceRolePolicy holds only read/list
+              # Organizations actions — it does NOT create/attach SCPs — so without these
+              # the EnableBaseline/ResetEnabledBaseline operation lands FAILED with
+              # "AWS Control Tower cannot modify the policy because the IAM user or role
+              # does not have permission ... in AWS Organizations". This is the complete,
+              # bounded SCP lifecycle an enroll/reset performs (create -> attach -> tag;
+              # update on re-register; detach/delete on reset), granted together to avoid
+              # iterating one denial at a time across ~18-min deploys. Policy ARNs are not
+              # known ahead of time, so Resource must be '*'.
+              - Effect: Allow
+                Action:
+                  - organizations:CreatePolicy
+                  - organizations:UpdatePolicy
+                  - organizations:DeletePolicy
+                  - organizations:AttachPolicy
+                  - organizations:DetachPolicy
+                  - organizations:EnablePolicyType
+                  - organizations:DescribePolicy
+                  - organizations:ListPolicies
+                  - organizations:ListPoliciesForTarget
+                  - organizations:ListTargetsForPolicy
+                  - organizations:TagResource
+                  - organizations:UntagResource
+                  - organizations:ListTagsForResource
+                Resource: '*'
+              # AWS Service Catalog permissions required by the Control Tower
+              # baseline (issue #114 Round-5). After the SCP-management gap was
+              # closed, CT baseline enrollment progressed and then failed on the
+              # NEXT missing permission: Control Tower provisions the baseline via
+              # a Service Catalog product, again using the *caller's* credentials
+              # (CloudTrail: servicecatalog:ListProvisioningArtifacts AccessDenied,
+              # made as this OrgDiscovery role with invokedBy=controltower.amazonaws.com;
+              # get-baseline-operation: "insufficient permissions to perform AWS
+              # Service Catalog API actions"). CT aborts at the first denial, so grant
+              # the full provisioning lifecycle a baseline enroll/reset uses (search/
+              # describe/list -> provision -> describe/update/terminate provisioned
+              # product) together, rather than iterating one denial at a time across
+              # ~18-min deploys. Product/provisioned-product ARNs are not known ahead
+              # of time, so Resource must be '*'.
+              - Effect: Allow
+                Action:
+                  - servicecatalog:ListProvisioningArtifacts
+                  - servicecatalog:ListLaunchPaths
+                  - servicecatalog:SearchProducts
+                  - servicecatalog:DescribeProduct
+                  - servicecatalog:DescribeProductView
+                  - servicecatalog:DescribeProvisioningArtifact
+                  - servicecatalog:DescribeProvisioningParameters
+                  - servicecatalog:ProvisionProduct
+                  - servicecatalog:DescribeProvisionedProduct
+                  - servicecatalog:DescribeRecord
+                  - servicecatalog:UpdateProvisionedProduct
+                  - servicecatalog:TerminateProvisionedProduct
+                  - servicecatalog:ScanProvisionedProducts
+                  - servicecatalog:SearchProvisionedProducts
+                Resource: '*'
+              # Item-level actions operate on the individual parameters under
+              # the prefix, so they authorize against the child ARNs (.../*).
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${uSSMParameterPrefix}/*'
+              # GetParametersByPath authorizes against the *path container*
+              # resource itself (the prefix with no trailing /*), NOT the child
+              # ARNs. The Delete handler lists every parameter under the prefix
+              # via get_parameters_by_path before deleting them; scoping this to
+              # the /* ARN (as the first obs-102 fix did) still fails with
+              # AccessDenied, the handler swallows it, and the params survive the
+              # stack delete (issue #102, reopened).
+              - Effect: Allow
+                Action:
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${uSSMParameterPrefix}'
+      Tags:
+        - Key: Purpose
+          Value: 'Organization Discovery and SSM Parameter Management'
+        - Key: ManagedBy
+          Value: 'CloudFormation'
+
+  # Lambda function for organization discovery
+  OrganizationDiscoveryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'Titanium-OrgDiscovery-${AWS::StackName}'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt OrganizationDiscoveryRole.Arn
+      # 15 min (max) so baseline enrollment can be serialized: Control Tower
+      # allows one baseline operation at a time and each takes minutes, so the
+      # Lambda waits for each EnableBaseline/ResetEnabledBaseline to finish before
+      # starting the next (issue #114). A wall-clock deadline derived from the
+      # remaining time keeps it from timing out mid-op; any OUs not finished this
+      # run are picked up on the next run (FAILED/missing are re-attempted).
+      Timeout: 900
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import re
+          import time
+          import cfnresponse
+
+          # Control Tower's Identity Center baseline. EnabledBaseline for an OU must
+          # be told which Identity Center enabled-baseline it inherits from, and that
+          # ARN contains the management account ID, so it has to be discovered at
+          # deploy time rather than templated in.
+          IDENTITY_CENTER_BASELINE_ID = 'LN25R72TTG6IGPTQ'
+
+          def ssm_slug(ou_name):
+              """Convert an OU name into an SSM-parameter-safe path segment.
+
+              AWS Organizations allows spaces and punctuation in OU names but SSM
+              parameter names do not. Must stay identical to the generator's
+              _ssm_slug so the hub OU lands on the same path convention as the
+              generated OUs.
+              """
+              slug = re.sub(r'[^A-Za-z0-9]+', '-', ou_name).strip('-').lower()
+              return slug or 'ou'
+
+          def find_hub_ou(organizations, root_id, hub_ou_name):
+              """Locate the Control Tower-created hub OU by name under the root."""
+              paginator = organizations.get_paginator('list_organizational_units_for_parent')
+              for page in paginator.paginate(ParentId=root_id):
+                  for ou in page['OrganizationalUnits']:
+                      if ou['Name'] == hub_ou_name:
+                          return ou['Id']
+              return ''
+
+          def adopt_or_create_ou(organizations, root_id, ou_name):
+              """Return (ou_id, created) for the OU named ou_name under root_id.
+
+              On a Control-Tower-managed or previously-configured org the OUs commonly
+              already exist, so an unconditional CreateOrganizationalUnit fails with
+              DuplicateOrganizationalUnitException. Adopting the existing OU by name
+              makes this stack idempotent and re-runnable (issue #78). ``created`` is
+              True only when this call created the OU, so the caller can flag OUs that
+              would be orphaned if the stack later rolls back (issue #94).
+              """
+              paginator = organizations.get_paginator('list_organizational_units_for_parent')
+              for page in paginator.paginate(ParentId=root_id):
+                  for ou in page['OrganizationalUnits']:
+                      if ou['Name'] == ou_name:
+                          print(f"Adopted existing OU '{ou_name}': {ou['Id']}")
+                          return ou['Id'], False
+              created = organizations.create_organizational_unit(
+                  ParentId=root_id, Name=ou_name
+              )
+              ou_id = created['OrganizationalUnit']['Id']
+              print(f"Created OU '{ou_name}': {ou_id}")
+              return ou_id, True
+
+          def get_enabled_baseline(controltower, ou_arn, baseline_arn):
+              """Return the enabledBaseline dict for baseline_arn on ou_arn, or None.
+
+              AWS::ControlTower::EnabledBaseline is not idempotent — enabling a
+              baseline that is already enabled fails with AlreadyExists and rolls the
+              whole stack back (issue #91). On real Control Tower accounts OUs are
+              commonly already enrolled (console, CT defaults, or a prior run), so we
+              detect the existing enrollment and return it. The caller inspects
+              statusSummary.status: a FAILED enrollment must be re-attempted, not
+              adopted as done (issue #114).
+              """
+              try:
+                  paginator = controltower.get_paginator('list_enabled_baselines')
+                  for page in paginator.paginate(filter={'targetIdentifiers': [ou_arn]}):
+                      for enabled in page.get('enabledBaselines', []):
+                          if enabled.get('baselineIdentifier', '') == baseline_arn:
+                              return enabled
+              except Exception as e:
+                  # If we cannot determine enrollment state, fall through to an
+                  # EnableBaseline attempt; its own AlreadyExists is caught below.
+                  print(f"Could not list enabled baselines for {ou_arn}: {str(e)}")
+              return None
+
+          def wait_for_baseline_operation(controltower, operation_id, deadline):
+              """Poll get_baseline_operation until terminal or the wall-clock deadline.
+
+              Control Tower serializes baseline operations, so we wait for one to
+              leave the in-progress state before starting the next (issue #114).
+              Returns the terminal status ('SUCCEEDED'/'FAILED'), or None if it was
+              still in progress when we stopped (deadline / error). Never raises.
+              """
+              if not operation_id:
+                  return None
+              while time.time() < deadline:
+                  try:
+                      op = controltower.get_baseline_operation(
+                          operationIdentifier=operation_id)
+                      status = op.get('baselineOperation', {}).get('status', '')
+                      if status in ('SUCCEEDED', 'FAILED'):
+                          print(f"Baseline operation {operation_id} finished: {status}")
+                          return status
+                      print(f"Baseline operation {operation_id} status {status or '?'}; waiting...")
+                  except Exception as e:
+                      print(f"Error polling baseline operation {operation_id}: {str(e)}")
+                      return None
+                  time.sleep(15)
+              print(f"Stopped waiting for baseline operation {operation_id} (deadline)")
+              return None
+
+          def start_baseline_op(start_fn, ou_arn, label, deadline):
+              """Start a baseline operation, retrying while Control Tower reports
+              another operation in progress (ConflictException), up to the deadline.
+
+              Returns the operationIdentifier, or None if it never started (a
+              non-conflict error, or still conflicting at the deadline — a re-run
+              retries it). Never raises.
+              """
+              while True:
+                  try:
+                      result = start_fn()
+                      op_id = result.get('operationIdentifier')
+                      print(f"Started {label} on {ou_arn}: operation {op_id or '?'}")
+                      return op_id
+                  except Exception as e:
+                      msg = str(e)
+                      conflict = ('ConflictException' in msg
+                                  or 'another operation' in msg.lower())
+                      if conflict and time.time() < deadline:
+                          print(f"{label} on {ou_arn} conflicted with an in-progress "
+                                f"operation; retrying...")
+                          time.sleep(15)
+                          continue
+                      # Non-conflict error, or still conflicting at the deadline.
+                      print(f"{label} on {ou_arn} did not start "
+                            f"(will retry on re-run): {msg}")
+                      return None
+
+          def enroll_ou_baseline(controltower, ou_arn, baseline_arn, baseline_version,
+                                 identity_center_arn, deadline):
+              """Enroll ou_arn into the Control Tower baseline, serialized and retried.
+
+              Adopts an already-SUCCEEDED enrollment; re-attempts a FAILED one via
+              ResetEnabledBaseline; enables an un-enrolled OU. Baseline operations are
+              started one at a time (Control Tower serializes them) and each is waited
+              on until terminal or the wall-clock deadline before returning, so the
+              next OU does not race it into a ConflictException (issue #114). Past the
+              deadline it falls back to fire-and-forget and a re-run finishes the rest
+              (FAILED/missing are re-attempted). Never raises — one OU cannot roll back
+              the others.
+
+              Returns a short outcome status so the caller can surface OUs that did
+              not reach a healthy enrollment (issue #114 Round-4): 'SUCCEEDED' or an
+              adopted non-FAILED status, 'FAILED' when the baseline operation ended
+              FAILED (e.g. the CT SCP-permission gap), or 'PENDING' when it was still
+              in progress / never started before the deadline (a re-run finishes it).
+              """
+              enabled = get_enabled_baseline(controltower, ou_arn, baseline_arn)
+              if enabled is not None:
+                  status = enabled.get('statusSummary', {}).get('status', '')
+                  if status != 'FAILED':
+                      print(f"Baseline already enabled on {ou_arn} "
+                            f"(status {status or 'unknown'}) — adopted, not re-enrolled")
+                      return status or 'SUCCEEDED'
+                  # FAILED enrollment — reset the existing EnabledBaseline to retry it.
+                  print(f"Baseline on {ou_arn} is FAILED — resetting to re-attempt")
+                  op_id = start_baseline_op(
+                      lambda: controltower.reset_enabled_baseline(
+                          enabledBaselineIdentifier=enabled.get('arn')),
+                      ou_arn, 'ResetEnabledBaseline', deadline)
+                  return wait_for_baseline_operation(
+                      controltower, op_id, deadline) or 'PENDING'
+
+              parameters = []
+              # Control Tower requires the Identity Center enabled-baseline ARN on the
+              # baseline whenever it manages Identity Center; only attach it when it
+              # was actually discovered for this account.
+              if identity_center_arn:
+                  parameters.append({
+                      'key': 'IdentityCenterEnabledBaselineArn',
+                      'value': identity_center_arn,
+                  })
+              op_id = start_baseline_op(
+                  lambda: controltower.enable_baseline(
+                      baselineIdentifier=baseline_arn,
+                      baselineVersion=baseline_version,
+                      targetIdentifier=ou_arn,
+                      parameters=parameters),
+                  ou_arn, 'EnableBaseline', deadline)
+              # Serialize: wait for this operation to finish before the caller starts
+              # the next OU, so Control Tower's one-operation-at-a-time constraint is
+              # not violated (issue #114).
+              return wait_for_baseline_operation(
+                  controltower, op_id, deadline) or 'PENDING'
+
+          def find_identity_center_baseline_arn(session):
+              """Resolve the Identity Center enabled-baseline ARN for this account.
+
+              Returns '' when Control Tower is not managing Identity Center, when the
+              baseline has not finished enabling, or when the runtime's botocore is
+              too old to expose the Control Tower baseline APIs. Callers that need the
+              ARN will fail with an explicit CloudFormation error naming the missing
+              parameter, which is more diagnosable than guessing an ARN here.
+              """
+              try:
+                  controltower = session.client('controltower')
+              except Exception as e:
+                  print(f"Control Tower client unavailable: {str(e)}")
+                  return ''
+
+              if not hasattr(controltower, 'list_enabled_baselines'):
+                  print("botocore in this runtime does not support list_enabled_baselines")
+                  return ''
+
+              try:
+                  paginator = controltower.get_paginator('list_enabled_baselines')
+                  for page in paginator.paginate():
+                      for baseline in page.get('enabledBaselines', []):
+                          identifier = baseline.get('baselineIdentifier', '')
+                          if identifier.endswith(IDENTITY_CENTER_BASELINE_ID):
+                              arn = baseline.get('arn', '')
+                              print(f"Identity Center enabled-baseline ARN: {arn}")
+                              return arn
+                  print("No Identity Center enabled-baseline found")
+              except Exception as e:
+                  print(f"Error listing enabled baselines: {str(e)}")
+              return ''
+
+          def lambda_handler(event, context):
+              try:
+                  print(f"Event: {json.dumps(event)}")
+
+                  session = boto3.session.Session()
+                  organizations = session.client('organizations')
+                  ssm = session.client('ssm')
+
+                  if event['RequestType'] == 'Delete':
+                      # Leave-and-log semantics (issue #94): OUs adopted-or-created on
+                      # Create are NOT deleted here. They are durable org structure that
+                      # may already hold accounts or child OUs, and deleting Control
+                      # Tower-enrolled OUs would need de-registration first — so on both
+                      # a normal stack delete and a rollback the OUs are intentionally
+                      # left in place. This handler cleans up only the SSM parameters
+                      # this stack wrote (every parameter under the prefix, so it also
+                      # clears any left by a prior partial run).
+                      deleted = 0
+                      try:
+                          ssm_prefix = event['ResourceProperties']['SSMPrefix']
+
+                          # List parameters with our prefix
+                          paginator = ssm.get_paginator('get_parameters_by_path')
+                          for page in paginator.paginate(Path=ssm_prefix, Recursive=True):
+                              for param in page['Parameters']:
+                                  try:
+                                      ssm.delete_parameter(Name=param['Name'])
+                                      deleted += 1
+                                      print(f"Deleted SSM parameter: {param['Name']}")
+                                  except Exception as e:
+                                      print(f"Error deleting parameter {param['Name']}: {str(e)}")
+                          print(f"SSM cleanup complete: deleted {deleted} parameter(s) under "
+                                f"{ssm_prefix}. OUs are left in place (leave-and-log, #94).")
+                      except Exception as e:
+                          print(f"Error during cleanup: {str(e)}")
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  # Get organization information
+                  try:
+                      org_info = organizations.describe_organization()
+                      org_id = org_info['Organization']['Id']
+                      # Management account ID — org/01 always runs in the management
+                      # account, so this is the account segment of every OU ARN used
+                      # as an EnableBaseline target.
+                      mgmt_account_id = org_info['Organization']['MasterAccountId']
+                      print(f"Organization ID: {org_id}")
+                  except Exception as e:
+                      print(f"Error getting organization info: {str(e)}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED,
+                                     {'Error': f'Failed to get organization info: {str(e)}'})
+                      return
+
+                  # Get organization root
+                  try:
+                      roots = organizations.list_roots()
+                      if not roots['Roots']:
+                          cfnresponse.send(event, context, cfnresponse.FAILED,
+                                         {'Error': 'No organization roots found'})
+                          return
+
+                      root_id = roots['Roots'][0]['Id']
+                      root_name = roots['Roots'][0]['Name']
+                      print(f"Organization Root ID: {root_id}, Name: {root_name}")
+
+                      ssm_prefix = event['ResourceProperties']['SSMPrefix']
+                      root_param_name = f"{ssm_prefix}/root-id"
+
+                      # Note: Tags cannot be combined with Overwrite in put_parameter.
+                      # Overwrite is required for idempotent re-runs (custom resources
+                      # fire on Update). Tags are omitted because nothing consumes them —
+                      # the parameter path is self-describing and all lookups are by path.
+                      ssm.put_parameter(
+                          Name=root_param_name,
+                          Value=root_id,
+                          Description=f'Organization Root ID for {org_id}',
+                          Type='String',
+                          Overwrite=True
+                      )
+                      print(f"Stored root ID in SSM parameter: {root_param_name}")
+
+                      # Publish the Control Tower-created hub OU ID on the same path
+                      # convention the generated OUs use, so downstream templates can
+                      # resolve it without caring which stack created it.
+                      hub_ou_name = event['ResourceProperties'].get('HubOuName', '')
+                      hub_ou_id = ''
+                      if hub_ou_name:
+                          hub_ou_id = find_hub_ou(organizations, root_id, hub_ou_name)
+                          if hub_ou_id:
+                              hub_param_name = f"{ssm_prefix}/{ssm_slug(hub_ou_name)}-ou-id"
+                              ssm.put_parameter(
+                                  Name=hub_param_name,
+                                  Value=hub_ou_id,
+                                  Description=f'Control Tower hub OU ID ({hub_ou_name})',
+                                  Type='String',
+                                  Overwrite=True
+                              )
+                              print(f"Stored hub OU ID in SSM parameter: {hub_param_name}")
+                          else:
+                              print(f"Hub OU '{hub_ou_name}' not found under root {root_id}")
+
+                      identity_center_arn = find_identity_center_baseline_arn(session)
+
+                      # Control Tower baseline enrollment config (passed as static
+                      # resource properties by the template; kept in sync with the
+                      # generator's CONTROL_TOWER_BASELINE_* constants).
+                      baseline_arn = event['ResourceProperties'].get('BaselineArn', '')
+                      baseline_version = event['ResourceProperties'].get('BaselineVersion', '')
+                      try:
+                          controltower = session.client('controltower')
+                      except Exception as e:
+                          controltower = None
+                          print(f"Control Tower client unavailable, "
+                                f"skipping baseline enrollment: {str(e)}")
+
+                      response_data = {
+                          'RootId': root_id,
+                          'RootName': root_name,
+                          'OrganizationId': org_id,
+                          'HubOuId': hub_ou_id,
+                          'IdentityCenterEnabledBaselineArn': identity_center_arn,
+                          'SSMParameterName': root_param_name
+                      }
+
+                      # Adopt-or-create each configured OU and publish its ID.
+                      # The OU list is generated into this resource's properties; each
+                      # entry carries the OU Name and the CloudFormation LogicalId the
+                      # template uses to GetAtt the returned ID (e.g. <LogicalId>OuId).
+                      # SSM parameters are written here with Overwrite=True so re-runs
+                      # are idempotent even when an OU (and its param) already exist.
+                      # Wall-clock deadline for serialized baseline enrollment.
+                      # Reserve headroom (~45s) so we always finish SSM writes and
+                      # send a cfnresponse rather than timing out mid-operation
+                      # (issue #114). Past the deadline enroll_ou_baseline falls back
+                      # to fire-and-forget and a re-run finishes the remaining OUs.
+                      baseline_deadline = time.time() + max(
+                          0.0, context.get_remaining_time_in_millis() / 1000.0 - 45)
+
+                      created_ous = []
+                      # Track OUs whose baseline enrollment did not reach a healthy
+                      # state so we can surface them (issue #114 Round-4): org/01 used
+                      # to return CREATE_COMPLETE even when every baseline op ended
+                      # FAILED, hiding un-enrolled OUs (SCPs unenforced) unless someone
+                      # ran list-enabled-baselines. FAILED = a real problem to fix
+                      # (e.g. the CT SCP-permission gap); PENDING = still settling, a
+                      # re-run finishes it. We log + record but do NOT fail the stack:
+                      # enrollment is eventually consistent and one bad OU must not roll
+                      # back the org structure (leave-and-log, issue #94).
+                      failed_baselines = []
+                      pending_baselines = []
+                      for ou_spec in event['ResourceProperties'].get('OrganizationalUnits', []):
+                          ou_name = ou_spec['Name']
+                          logical_id = ou_spec['LogicalId']
+                          ou_id, was_created = adopt_or_create_ou(organizations, root_id, ou_name)
+                          if was_created:
+                              created_ous.append(f"{ou_name} ({ou_id})")
+                          response_data[f'{logical_id}OuId'] = ou_id
+                          ou_param_name = f"{ssm_prefix}/{ssm_slug(ou_name)}-ou-id"
+                          ssm.put_parameter(
+                              Name=ou_param_name,
+                              Value=ou_id,
+                              Description=f'{ou_name} OU ID',
+                              Type='String',
+                              Overwrite=True
+                          )
+                          print(f"Stored OU ID in SSM parameter: {ou_param_name}")
+
+                          # Enroll the OU into the Control Tower baseline. Adopts a
+                          # SUCCEEDED enrollment, resets a FAILED one, and enables an
+                          # un-enrolled OU — one baseline operation at a time, waiting
+                          # for each to finish before the next so Control Tower does
+                          # not reject them with ConflictException (issue #114).
+                          # Baselines replaced the non-idempotent
+                          # AWS::ControlTower::EnabledBaseline resources that failed
+                          # with AlreadyExists on enrolled OUs (issue #91).
+                          if controltower and baseline_arn and baseline_version:
+                              ou_arn = (f"arn:aws:organizations::{mgmt_account_id}:"
+                                        f"ou/{org_id}/{ou_id}")
+                              outcome = enroll_ou_baseline(
+                                  controltower, ou_arn, baseline_arn,
+                                  baseline_version, identity_center_arn,
+                                  baseline_deadline)
+                              if outcome == 'FAILED':
+                                  failed_baselines.append(f"{ou_name} ({ou_id})")
+                              elif outcome == 'PENDING':
+                                  pending_baselines.append(f"{ou_name} ({ou_id})")
+
+                      # Leave-and-log for OUs (issue #94): OUs are durable org structure
+                      # and may already hold accounts, so this Lambda never deletes them
+                      # (the Delete handler cleans only the SSM params it wrote). If the
+                      # stack later rolls back, any OU created above is left in place,
+                      # unenrolled. Emit a greppable marker so those orphans are easy to
+                      # find and remove by hand.
+                      if created_ous:
+                          print(f"ORPHAN-RISK: created {len(created_ous)} new OU(s): "
+                                f"{', '.join(created_ous)}. If this stack rolls back they "
+                                f"are left in place (not deleted); remove manually if unwanted.")
+
+                      # Surface baseline-enrollment outcomes (issue #114 Round-4). A
+                      # FAILED baseline leaves the OU un-enrolled (SCPs unenforced);
+                      # without this the stack returns CREATE_COMPLETE and the failure
+                      # is invisible unless you run list-enabled-baselines. We log a
+                      # greppable marker, record the un-healthy OUs in an SSM param and
+                      # in the resource outputs, but keep returning SUCCESS so the
+                      # eventually-consistent re-run model still applies (a re-run
+                      # re-attempts FAILED/PENDING enrollments).
+                      response_data['BaselineFailedOus'] = ', '.join(failed_baselines)
+                      response_data['BaselinePendingOus'] = ', '.join(pending_baselines)
+                      if failed_baselines:
+                          print(f"BASELINE-FAILED: {len(failed_baselines)} OU(s) did not "
+                                f"enroll in the Control Tower baseline: "
+                                f"{', '.join(failed_baselines)}. Their guardrail SCPs are "
+                                f"NOT enforced. Check 'controltower get-baseline-operation' / "
+                                f"CloudTrail for the cause and re-run this stack once fixed.")
+                      if pending_baselines:
+                          print(f"BASELINE-PENDING: {len(pending_baselines)} OU(s) were "
+                                f"still enrolling at the deadline: "
+                                f"{', '.join(pending_baselines)}. Re-run this stack to finish.")
+                      try:
+                          ssm.put_parameter(
+                              Name=f"{ssm_prefix}/baseline-failed-ous",
+                              Value=(', '.join(failed_baselines) if failed_baselines
+                                     else 'none'),
+                              Description='OUs whose Control Tower baseline enrollment '
+                                          'ended FAILED (SCPs unenforced) on the last '
+                                          'org/01 run (issue #114)',
+                              Type='String',
+                              Overwrite=True
+                          )
+                      except Exception as e:
+                          print(f"Could not record baseline-failed-ous parameter: {str(e)}")
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+
+                  except Exception as e:
+                      print(f"Error getting organization root: {str(e)}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED,
+                                     {'Error': f'Failed to get organization root: {str(e)}'})
+
+              except Exception as e:
+                  print(f"Unexpected error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED,
+                                 {'Error': f'Unexpected error: {str(e)}'})
+      Tags:
+        - Key: Purpose
+          Value: 'Organization Discovery'
+        - Key: ManagedBy
+          Value: 'CloudFormation'
+
+  # Custom resource for organization discovery
+  OrganizationRootDiscovery:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt OrganizationDiscoveryFunction.Arn
+      SSMPrefix: !Ref uSSMParameterPrefix
+      HubOuName: !Ref uHubOuName
+      # Control Tower baseline the discovery Lambda enrolls each OU into. These are
+      # constants kept in sync with the generator's CONTROL_TOWER_BASELINE_* values;
+      # passing them here (rather than emitting per-OU AWS::ControlTower::EnabledBaseline
+      # resources) lets the Lambda adopt already-enrolled OUs and stay idempotent (#91).
+      BaselineArn: !Sub 'arn:aws:controltower:${AWS::Region}::baseline/17BSJV3IGJ2QSGA2'
+      BaselineVersion: '5.0'
+      # TITANIUM:BEGIN generated-ou-list
+      # Generated: one {Name, LogicalId} entry per organization.organizationalUnits
+      # entry (hub OU excluded). The discovery Lambda adopts-or-creates each and
+      # returns its ID as <LogicalId>OuId. Empty list = discovery only, no OUs.
+      OrganizationalUnits: []
+      # TITANIUM:END generated-ou-list
+
+  # TITANIUM:BEGIN generated-organizational-units
+  # (Intentionally empty.) Baseline enrollment is performed by the discovery Lambda,
+  # not by generated AWS::ControlTower::EnabledBaseline resources: those always CREATE
+  # and fail with AlreadyExists on any OU that is already Control Tower-enrolled,
+  # rolling back the whole stack (issue #91). The Lambda instead adopts SUCCEEDED
+  # enrollments, resets FAILED ones, and enables un-enrolled OUs one baseline
+  # operation at a time (see enroll_ou_baseline above), so enrollment is idempotent
+  # and does not hit Control Tower's ConflictException (issue #114). The OUs, their
+  # SSM ID parameters, and their enrollment are all handled by the discovery Lambda
+  # via the OrganizationalUnits input above.
+  # TITANIUM:END generated-organizational-units
+
+Outputs:
+  OrganizationId:
+    Description: 'AWS Organization ID'
+    Value: !GetAtt OrganizationRootDiscovery.OrganizationId
+    Export:
+      Name: !Sub '${AWS::StackName}-OrganizationId'
+
+  OrganizationRootId:
+    Description: 'Organization Root ID'
+    Value: !GetAtt OrganizationRootDiscovery.RootId
+    Export:
+      Name: !Sub '${AWS::StackName}-OrganizationRootId'
+
+  HubOuId:
+    Description: 'Control Tower-created hub OU ID (empty if not found)'
+    Value: !GetAtt OrganizationRootDiscovery.HubOuId
+    Export:
+      Name: !Sub '${AWS::StackName}-HubOU-ID'
+
+  SSMParameterPrefix:
+    Description: 'SSM Parameter Store prefix for OU IDs'
+    Value: !Ref uSSMParameterPrefix
+    Export:
+      Name: !Sub '${AWS::StackName}-SSMParameterPrefix'
+
+  # TITANIUM:BEGIN generated-ou-outputs
+  # Generated per entry in organization.organizationalUnits, one <Name>OuId output
+  # each, exported as ${AWS::StackName}-<Name>OU-ID.
+  # TITANIUM:END generated-ou-outputs

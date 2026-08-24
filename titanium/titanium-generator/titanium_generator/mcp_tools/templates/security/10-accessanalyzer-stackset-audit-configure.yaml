@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Access Analyzer - Organization Analyzers in Audit Account'
+
+Metadata:
+  DeploymentTarget: "Audit"
+  DeploymentType: "StackSet"
+  DeploymentOrder: 11
+  Prerequisites:
+    - "Access Analyzer delegated admin registered (template 10)"
+    - "Audit account is the delegated administrator for Access Analyzer"
+  Comment: |
+    Creates organization-level IAM Access Analyzer(s) in the Audit account.
+    
+    - External Access Analyzer (ORGANIZATION type): Identifies resources shared
+      with external principals outside the organization.
+    - Unused Access Analyzer (ORGANIZATION_UNUSED_ACCESS type): Identifies unused
+      IAM roles, access keys, and permissions. Optional, controlled by parameter.
+    
+    Uses native AWS::AccessAnalyzer::Analyzer CloudFormation resource.
+    
+    Deploy to: Audit Account (StackSet targeting Audit account)
+
+Parameters:
+  uEnableExternalAccess:
+    Type: String
+    Description: Enable the organization-level external access analyzer
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uEnableUnusedAccess:
+    Type: String
+    Description: Enable the organization-level unused access analyzer
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  uUnusedAccessAge:
+    Type: Number
+    Description: Number of days after which access is considered unused (for unused access analyzer)
+    Default: 90
+    MinValue: 1
+    MaxValue: 365
+
+Conditions:
+  cEnableExternalAccess: !Equals [!Ref uEnableExternalAccess, 'true']
+  cEnableUnusedAccess: !Equals [!Ref uEnableUnusedAccess, 'true']
+
+Resources:
+  rExternalAccessAnalyzer:
+    Type: AWS::AccessAnalyzer::Analyzer
+    Condition: cEnableExternalAccess
+    Properties:
+      AnalyzerName: organization-external-access-analyzer
+      Type: ORGANIZATION
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: Purpose
+          Value: ExternalAccessMonitoring
+
+  rUnusedAccessAnalyzer:
+    Type: AWS::AccessAnalyzer::Analyzer
+    Condition: cEnableUnusedAccess
+    Properties:
+      AnalyzerName: organization-unused-access-analyzer
+      Type: ORGANIZATION_UNUSED_ACCESS
+      AnalyzerConfiguration:
+        UnusedAccessConfiguration:
+          UnusedAccessAge: !Ref uUnusedAccessAge
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: Purpose
+          Value: UnusedAccessMonitoring
+
+Outputs:
+  ExternalAccessAnalyzerArn:
+    Condition: cEnableExternalAccess
+    Description: ARN of the External Access Analyzer
+    Value: !GetAtt rExternalAccessAnalyzer.Arn
+
+  UnusedAccessAnalyzerArn:
+    Condition: cEnableUnusedAccess
+    Description: ARN of the Unused Access Analyzer
+    Value: !GetAtt rUnusedAccessAnalyzer.Arn

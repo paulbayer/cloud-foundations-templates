@@ -1,0 +1,42 @@
+{
+  "tags": {
+    "Environment": {
+      "tag_key": {
+        "@@assign": "Environment",
+        "@@operators_allowed_for_child_policies": ["@@none"]
+      },
+      "tag_value": {
+        "@@assign": ["Production", "Development", "Staging", "Test"],
+        "@@operators_allowed_for_child_policies": ["@@append"]
+      },
+      "enforced_for": {
+        "@@assign": [
+          "ec2:instance",
+          "ec2:volume",
+          "s3:bucket",
+          "rds:db",
+          "lambda:function",
+          "dynamodb:table"
+        ]
+      }
+    },
+    "CostCenter": {
+      "tag_key": {
+        "@@assign": "CostCenter",
+        "@@operators_allowed_for_child_policies": ["@@none"]
+      },
+      "enforced_for": {
+        "@@assign": ["*"]
+      }
+    },
+    "Project": {
+      "tag_key": {
+        "@@assign": "Project",
+        "@@operators_allowed_for_child_policies": ["@@none"]
+      },
+      "enforced_for": {
+        "@@assign": ["*"]
+      }
+    }
+  }
+}

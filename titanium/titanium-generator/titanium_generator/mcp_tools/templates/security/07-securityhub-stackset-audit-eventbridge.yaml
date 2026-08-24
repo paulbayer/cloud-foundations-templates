@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EventBridge rules for Security Hub CSPM and Security Hub V2 integration'
+
+Metadata:
+  DeploymentTarget: "Audit"
+  DeploymentType: "StackSet"
+  DeploymentOrder: 8
+  Prerequisites:
+    - "Template 02 deployed (Security Hub CSPM configured)"
+    - "Template 07 deployed (Security Hub V2 configured)"
+  Comment: |
+    This template creates EventBridge rules to handle findings from both:
+    1. Security Hub CSPM (ASFF format, "Security Hub Findings – Imported")
+    2. New Security Hub (OCSF format, "Findings Imported V2")
+    
+    Use cases:
+    - Route findings to SNS topics for notifications
+    - Trigger Lambda functions for automated remediation
+    - Send findings to external SIEM/ticketing systems
+    - Archive findings to S3 for compliance
+    
+    Deploy to: Security/Audit Account (Delegated Admin)
+
+Parameters:
+  tEnableCSPMFindingsRule:
+    Type: String
+    Description: Enable EventBridge rule for Security Hub CSPM findings
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  tEnableV2FindingsRule:
+    Type: String
+    Description: Enable EventBridge rule for new Security Hub findings
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  tEnableExposureFindingsRule:
+    Type: String
+    Description: Enable EventBridge rule specifically for exposure findings
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  uNotificationTopicArn:
+    Type: String
+    Description: SNS Topic ARN for Security Hub notifications (optional)
+    Default: ''
+
+  tCSPMFindingSeverityFilter:
+    Type: CommaDelimitedList
+    Description: Filter CSPM findings by severity
+    Default: 'CRITICAL,HIGH'
+
+  tV2FindingSeverityFilter:
+    Type: CommaDelimitedList
+    Description: Filter V2 findings by severity
+    Default: 'CRITICAL,HIGH'
+
+Conditions:
+  EnableCSPMRule: !Equals [!Ref tEnableCSPMFindingsRule, 'true']
+  EnableV2Rule: !Equals [!Ref tEnableV2FindingsRule, 'true']
+  EnableExposureRule: !Equals [!Ref tEnableExposureFindingsRule, 'true']
+  HasNotificationTopic: !Not [!Equals [!Ref uNotificationTopicArn, '']]
+
+Resources:
+  # EventBridge rule for Security Hub CSPM findings (ASFF format)
+  SecurityHubCSPMFindingsRule:
+    Condition: EnableCSPMRule
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: SecurityHubCSPM-Findings-Rule
+      Description: Capture Security Hub CSPM findings (ASFF format)
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - Security Hub Findings - Imported
+        detail:
+          findings:
+            Severity:
+              Label: !Ref tCSPMFindingSeverityFilter
+            Workflow:
+              Status:
+                - NEW
+                - NOTIFIED
+      Targets:
+        - Arn: !If
+            - HasNotificationTopic
+            - !Ref uNotificationTopicArn
+            - !Ref SecurityHubCSPMFindingsTopic
+          Id: SecurityHubCSPMTarget
+          InputTransformer:
+            InputPathsMap:
+              severity: $.detail.findings[0].Severity.Label
+              title: $.detail.findings[0].Title
+              description: $.detail.findings[0].Description
+              accountId: $.detail.findings[0].AwsAccountId
+              region: $.detail.findings[0].Resources[0].Region
+              resourceId: $.detail.findings[0].Resources[0].Id
+            InputTemplate: |
+              "Security Hub CSPM Finding (ASFF)"
+              "Severity: <severity>"
+              "Title: <title>"
+              "Description: <description>"
+              "Account: <accountId>"
+              "Region: <region>"
+              "Resource: <resourceId>"
+
+  # EventBridge rule for new Security Hub findings (OCSF format)
+  SecurityHubV2FindingsRule:
+    Condition: EnableV2Rule
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: SecurityHubV2-Findings-Rule
+      Description: Capture new Security Hub findings (OCSF format)
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - Findings Imported V2
+        detail:
+          findings:
+            severity_id:
+              - 4  # High
+              - 5  # Critical
+            status_id:
+              - 1  # New
+              - 2  # In Progress
+      Targets:
+        - Arn: !If
+            - HasNotificationTopic
+            - !Ref uNotificationTopicArn
+            - !Ref SecurityHubV2FindingsTopic
+          Id: SecurityHubV2Target
+          InputTransformer:
+            InputPathsMap:
+              severity: $.detail.findings[0].severity
+              title: $.detail.findings[0].title
+              description: $.detail.findings[0].message
+              accountId: $.detail.findings[0].cloud.account_uid
+              region: $.detail.findings[0].cloud.region
+              resourceId: $.detail.findings[0].resources[0].uid
+            InputTemplate: |
+              "Security Hub V2 Finding (OCSF)"
+              "Severity: <severity>"
+              "Title: <title>"
+              "Description: <description>"
+              "Account: <accountId>"
+              "Region: <region>"
+              "Resource: <resourceId>"
+
+  # EventBridge rule specifically for exposure findings
+  SecurityHubExposureFindingsRule:
+    Condition: EnableExposureRule
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: SecurityHubV2-ExposureFindings-Rule
+      Description: Capture Security Hub exposure findings (correlated risks)
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - Findings Imported V2
+        detail:
+          findings:
+            type_uid:
+              - 200101  # Exposure finding type
+            severity_id:
+              - 4  # High
+              - 5  # Critical
+      Targets:
+        - Arn: !If
+            - HasNotificationTopic
+            - !Ref uNotificationTopicArn
+            - !Ref SecurityHubExposureFindingsTopic
+          Id: SecurityHubExposureTarget
+          InputTransformer:
+            InputPathsMap:
+              severity: $.detail.findings[0].severity
+              title: $.detail.findings[0].title
+              attackPath: $.detail.findings[0].attack_path
+              exposureScore: $.detail.findings[0].exposure_score
+              accountId: $.detail.findings[0].cloud.account_uid
+            InputTemplate: |
+              "CRITICAL: Security Hub Exposure Finding"
+              "Severity: <severity>"
+              "Title: <title>"
+              "Exposure Score: <exposureScore>"
+              "Attack Path: <attackPath>"
+              "Account: <accountId>"
+
+  # SNS Topics for findings (if not provided)
+  SecurityHubCSPMFindingsTopic:
+    Condition: EnableCSPMRule
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: SecurityHubCSPM-Findings
+      DisplayName: Security Hub CSPM Findings Notifications
+      Tags:
+        - Key: Service
+          Value: SecurityHubCSPM
+
+  SecurityHubV2FindingsTopic:
+    Condition: EnableV2Rule
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: SecurityHubV2-Findings
+      DisplayName: Security Hub V2 Findings Notifications
+      Tags:
+        - Key: Service
+          Value: SecurityHubV2
+
+  SecurityHubExposureFindingsTopic:
+    Condition: EnableExposureRule
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: SecurityHubV2-ExposureFindings
+      DisplayName: Security Hub V2 Exposure Findings (High Priority)
+      Tags:
+        - Key: Service
+          Value: SecurityHubV2
+        - Key: Priority
+          Value: Critical
+
+  # SNS Topic Policies
+  SecurityHubCSPMTopicPolicy:
+    Condition: EnableCSPMRule
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      Topics:
+        - !Ref SecurityHubCSPMFindingsTopic
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: 'sns:Publish'
+            Resource: !Ref SecurityHubCSPMFindingsTopic
+
+  SecurityHubV2TopicPolicy:
+    Condition: EnableV2Rule
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      Topics:
+        - !Ref SecurityHubV2FindingsTopic
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: 'sns:Publish'
+            Resource: !Ref SecurityHubV2FindingsTopic
+
+  SecurityHubExposureTopicPolicy:
+    Condition: EnableExposureRule
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      Topics:
+        - !Ref SecurityHubExposureFindingsTopic
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: 'sns:Publish'
+            Resource: !Ref SecurityHubExposureFindingsTopic
+
+Outputs:
+  CSPMFindingsRuleArn:
+    Condition: EnableCSPMRule
+    Description: ARN of the Security Hub CSPM findings EventBridge rule
+    Value: !GetAtt SecurityHubCSPMFindingsRule.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CSPMFindingsRuleArn'
+
+  V2FindingsRuleArn:
+    Condition: EnableV2Rule
+    Description: ARN of the Security Hub V2 findings EventBridge rule
+    Value: !GetAtt SecurityHubV2FindingsRule.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-V2FindingsRuleArn'
+
+  ExposureFindingsRuleArn:
+    Condition: EnableExposureRule
+    Description: ARN of the Security Hub V2 exposure findings EventBridge rule
+    Value: !GetAtt SecurityHubExposureFindingsRule.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ExposureFindingsRuleArn'
+
+  CSPMTopicArn:
+    Condition: EnableCSPMRule
+    Description: ARN of the Security Hub CSPM findings SNS topic
+    Value: !Ref SecurityHubCSPMFindingsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-CSPMTopicArn'
+
+  V2TopicArn:
+    Condition: EnableV2Rule
+    Description: ARN of the Security Hub V2 findings SNS topic
+    Value: !Ref SecurityHubV2FindingsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-V2TopicArn'
+
+  ExposureTopicArn:
+    Condition: EnableExposureRule
+    Description: ARN of the Security Hub V2 exposure findings SNS topic
+    Value: !Ref SecurityHubExposureFindingsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-ExposureTopicArn'

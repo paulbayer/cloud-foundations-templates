@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Compute Optimizer - Enable AWS Compute Optimizer at organization level (free tier)'
+
+Metadata:
+  DeploymentTarget: "Management"
+  DeploymentType: "Stack"
+  DeploymentOrder: 2
+  Prerequisites:
+    - "AWS Organizations enabled with all features"
+  Comment: |
+    Enables AWS Compute Optimizer across the organization using a Lambda-backed
+    Custom Resource. There is no native CloudFormation resource for this setting.
+
+    The Lambda performs two actions in order:
+    1. Enables trusted access for Compute Optimizer in AWS Organizations
+    2. Opts in the management account with includeMemberAccounts=True
+
+    The service-linked role (AWSServiceRoleForComputeOptimizer) is created
+    automatically by AWS when UpdateEnrollmentStatus is called.
+
+    Deploy to: Management account, home region only
+
+Parameters:
+  tEnableComputeOptimizer:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable AWS Compute Optimizer for the organization'
+
+Resources:
+  rComputeOptimizerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'titanium-compute-optimizer-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ComputeOptimizerPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - compute-optimizer:UpdateEnrollmentStatus
+                  - compute-optimizer:GetEnrollmentStatus
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - organizations:EnableAWSServiceAccess
+                  - organizations:DescribeOrganization
+                Resource: '*'
+
+  rComputeOptimizerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'titanium-compute-optimizer-${AWS::Region}'
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt rComputeOptimizerLambdaRole.Arn
+      Timeout: 120
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+              logger.info(f'Event: {event}')
+              try:
+                  if event['RequestType'] == 'Delete':
+                      logger.info('Delete request - Compute Optimizer remains enabled')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  enable = event['ResourceProperties']['EnableComputeOptimizer'].lower() == 'true'
+                  orgs = boto3.client('organizations')
+                  co = boto3.client('compute-optimizer')
+
+                  if enable:
+                      # Step 1: Enable trusted access for Compute Optimizer in Organizations
+                      orgs.enable_aws_service_access(
+                          ServicePrincipal='compute-optimizer.amazonaws.com'
+                      )
+                      logger.info('Trusted access enabled for Compute Optimizer')
+
+                      # Step 2: Opt in with member accounts (SLR created automatically)
+                      response = co.update_enrollment_status(
+                          status='Active',
+                          includeMemberAccounts=True
+                      )
+                      logger.info(f'Enrollment updated: {response}')
+
+                      # Verify
+                      status = co.get_enrollment_status()
+                      logger.info(f'Verified status: {status["status"]}, members enrolled: {status.get("memberAccountsEnrolled")}')
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'Status': status['status'],
+                          'MemberAccountsEnrolled': str(status.get('memberAccountsEnrolled', False))
+                      })
+                  else:
+                      co.update_enrollment_status(
+                          status='Inactive',
+                          includeMemberAccounts=False
+                      )
+                      logger.info('Compute Optimizer disabled')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'Status': 'Inactive'
+                      })
+
+              except Exception as e:
+                  logger.error(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  rComputeOptimizerCustomResource:
+    Type: Custom::ComputeOptimizer
+    Properties:
+      ServiceToken: !GetAtt rComputeOptimizerLambda.Arn
+      EnableComputeOptimizer: !Ref tEnableComputeOptimizer
+
+Outputs:
+  ComputeOptimizerEnabled:
+    Description: Whether Compute Optimizer is enabled
+    Value: !Ref tEnableComputeOptimizer
+  ComputeOptimizerLambdaArn:
+    Description: ARN of the Compute Optimizer Lambda
+    Value: !GetAtt rComputeOptimizerLambda.Arn

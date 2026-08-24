@@ -1,0 +1,504 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Configure Security Hub organization-wide settings.
+  
+  IMPORTANT: Security Hub is automatically enabled in the delegated admin account
+  when Template 01 creates the DelegatedAdmin resource. This template does NOT
+  need to enable Security Hub - it only configures it.
+  
+  This template:
+  1. Creates finding aggregator in us-west-2 to collect from all regions
+  2. Configures organization settings and configuration policy (us-west-2 only)
+  
+  Deploy as StackSet to Audit account in us-west-2 region only.
+
+Metadata:
+  DeploymentTarget: "Audit"
+  DeploymentType: "StackSet"
+  DeploymentOrder: 2
+  DeploymentRegions: "us-west-2 only (aggregation region)"
+  Prerequisites:
+    - "Template 01 deployed (Security Hub delegation - this enables Security Hub)"
+    - "AWS Control Tower deployed"
+  Changes:
+    - "Removed AWS::SecurityHub::Hub resource (already enabled by delegation)"
+    - "Changed FindingAggregator to ALL_REGIONS mode"
+    - "Deploy only to us-west-2 (aggregation region)"
+
+Parameters:
+  uRootOuId:
+    Type: String
+    Description: ID of the root ou 
+
+  tEnableCIS12Standard:
+    Type: String
+    Description: Enable CIS AWS Foundations Benchmark v1.2.0
+    Default: false
+    AllowedValues: ['true', 'false']
+  
+  tEnableCIS14Standard:
+    Type: String
+    Description: Enable CIS AWS Foundations Benchmark v1.4.0
+    Default: false
+    AllowedValues: ['true', 'false']
+  
+  tEnableAFSBPStandard:
+    Type: String
+    Description: Enable AWS Foundational Security Best Practices v1.0.0
+    Default: true
+    AllowedValues: ['true', 'false']
+  
+  tEnableNISTStandard:
+    Type: String
+    Description: Enable NIST 800-53 v5.0.0
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  
+  tEnablePCIStandard:
+    Type: String
+    Description: Enable PCI DSS v3.2.1
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  
+  # pAutoEnable:
+  #   Type: String
+  #   Description: Auto-enable Security Hub for new accounts
+  #   Default: 'true'
+  #   AllowedValues: ['true', 'false']
+
+Conditions:
+  EnableCIS12: !Equals [!Ref tEnableCIS12Standard, 'true']
+  EnableCIS14: !Equals [!Ref tEnableCIS14Standard, 'true']
+  EnableAFSBP: !Equals [!Ref tEnableAFSBPStandard, 'true']
+  EnableNIST: !Equals [!Ref tEnableNISTStandard, 'true']
+  EnablePCI: !Equals [!Ref tEnablePCIStandard, 'true']
+
+Resources:
+  # STEP 1: Create Finding Aggregator
+  # Security Hub is already enabled by Template 01 delegation
+  # Aggregates findings from all regions to us-west-2
+  SecurityHubFindingAggregator:
+    Type: 'AWS::SecurityHub::FindingAggregator'
+    Properties:
+      RegionLinkingMode: 'ALL_REGIONS'  # Automatically includes all current and future regions
+
+  # STEP 2: Configure Organization-wide settings
+  # This resource is deleted natively by CloudFormation on teardown (NOT Retained).
+  # It used to carry DeletionPolicy: Retain because the native delete tried to
+  # disable central configuration and 409'd ("You can't disable central
+  # configuration while policies and associations exist"), wedging the stackset
+  # instance INOPERABLE (issue #103). Retaining it, however, left the org
+  # singleton behind after teardown, so a later redeploy on the same account hit
+  # "Organization Configuration resource already exists" — the native CREATE has
+  # no adopt path (issue #115).
+  #
+  # Retain is no longer needed: CloudFormation deletes in dependency order, so
+  # SecurityHubPolicyAssociation (which DependsOn ConfigurationPolicy ->
+  # this resource) is torn down FIRST and, per the obs-103 Round-4 fix, reliably
+  # disassociates + deletes the policy and confirms the org config is LOCAL before
+  # returning SUCCESS. By the time CloudFormation issues this native delete,
+  # central configuration is already disabled with no policies/associations, so
+  # the 409 precondition is gone and the delete succeeds — clearing the singleton
+  # so a redeploy's CREATE works. If LOCAL is somehow not reached, that same
+  # obs-103 fix fails the PolicyAssociation delete, halting teardown BEFORE this
+  # native delete runs, so we cannot regress to INOPERABLE.
+  SecurityHubOrganizationConfiguration:
+    Type: 'AWS::SecurityHub::OrganizationConfiguration'
+    DependsOn:
+      - SecurityHubFindingAggregator
+    Properties:
+      AutoEnable: false
+      AutoEnableStandards: "NONE"
+      ConfigurationType: "CENTRAL"
+
+  # STEP 3: Create Configuration Policy
+  # DeletionPolicy: Retain prevents CloudFormation from deleting this resource.
+  # The Custom Resource handles disassociation and deletion in its Delete handler.
+  SecurityHubConfigurationPolicy:
+    Type: "AWS::SecurityHub::ConfigurationPolicy"
+    DeletionPolicy: Retain
+    DependsOn:
+      - SecurityHubOrganizationConfiguration
+    Properties:
+      Tags:
+        key1: value1
+      Name: "SecurityHubConfigurationPolicy-Titanium"
+      Description: "Template to create SecurityHub Configuration Policy"
+      ConfigurationPolicy:
+        SecurityHub:
+          ServiceEnabled: true
+          EnabledStandardIdentifiers:
+            - !If 
+              - EnableAFSBP
+              - !Sub "arn:${AWS::Partition}:securityhub:${AWS::Region}::standards/aws-foundational-security-best-practices/v/1.0.0"
+              - !Ref AWS::NoValue
+            - !If 
+              - EnableCIS12
+              - !Sub 'arn:${AWS::Partition}:securityhub:${AWS::Region}::standards/cis-aws-foundations-benchmark/v/1.2.0'
+              - !Ref AWS::NoValue
+            - !If 
+              - EnableCIS14
+              - !Sub 'arn:${AWS::Partition}:securityhub:${AWS::Region}::standards/cis-aws-foundations-benchmark/v/1.4.0'
+              - !Ref AWS::NoValue
+            - !If 
+              - EnableNIST
+              - !Sub 'arn:${AWS::Partition}:securityhub:${AWS::Region}::standards/nist-800-53/v/5.0.0'
+              - !Ref AWS::NoValue
+            - !If 
+              - EnablePCI
+              - !Sub 'arn:${AWS::Partition}:securityhub:${AWS::Region}::standards/pci-dss/v/3.2.1'
+              - !Ref AWS::NoValue
+          SecurityControlsConfiguration:
+            DisabledSecurityControlIdentifiers: []
+            SecurityControlCustomParameters: []
+
+
+  # Lambda execution role for custom resource
+  PolicyAssociationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SecurityHubPolicyAssociation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # securityhub:* (issue #103 Round-5). The teardown Lambda associates
+              # /disassociates + deletes the configuration policy and flips the org
+              # config back to LOCAL. The final UpdateOrganizationConfiguration
+              # (ConfigurationType=LOCAL) was denied even though that exact action
+              # is granted: CloudTrail showed AccessDenied with a *null* errorMessage
+              # — a SecurityHub service-side authorization rejection, not an IAM
+              # identity deny (those always carry a "not authorized … no
+              # identity-based policy allows" message). The identical LOCAL call from
+              # AWSControlTowerExecution (which carries securityhub:*) succeeds, so a
+              # companion central-configuration permission is required that
+              # SecurityHub does not name in CloudTrail — leaving no signal to
+              # converge on a minimal set by iteration. Grant securityhub:* on this
+              # narrow teardown role: it runs in the SecurityHub delegated-admin
+              # (Audit) account, which already effectively controls SecurityHub
+              # org-wide, so this is proportionate and is the proven-working grant.
+              - Effect: Allow
+                Action:
+                  - securityhub:*
+                Resource: '*'
+
+  # Lambda function using async StartConfigurationPolicyAssociation API
+  PolicyAssociationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt PolicyAssociationLambdaRole.Arn
+      Timeout: 900  # 15 min (CFN/Lambda max) — central-config disassociation is
+                    # async and cascades org-wide; needs headroom to complete
+                    # before we confirm LOCAL and return SUCCESS (issue #103)
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+          import json
+          import time
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          securityhub = boto3.client('securityhub')
+
+          def disable_central_configuration(max_wait_seconds=180):
+              """Flip the org configuration back to LOCAL (disable central config).
+
+              Required on teardown for two reasons: (1) AWS refuses to remove the
+              delegated Security Hub administrator (security/01) while central
+              configuration is still enabled; (2) this custom resource is torn down
+              (dependency order) BEFORE the native
+              AWS::SecurityHub::OrganizationConfiguration, so confirming LOCAL here
+              is what lets that native delete succeed instead of 409-ing and wedging
+              the stackset INOPERABLE. That native delete then clears the org
+              singleton, so a redeploy's CREATE no longer hits "already exists"
+              (issues #103 and #115). Reporting SUCCESS only once LOCAL is confirmed
+              (see the Delete handler) also means teardown halts here rather than at
+              the native delete if LOCAL was never reached.
+
+              The 409 "You can't disable central configuration while policies and
+              associations exist" is retryable: it means the async disassociation /
+              policy delete has not fully propagated yet. Poll until it succeeds.
+              Returns True once LOCAL is set, False if it never settled.
+              """
+              start_time = time.time()
+              while True:
+                  try:
+                      securityhub.update_organization_configuration(
+                          AutoEnable=False,
+                          AutoEnableStandards='NONE',
+                          OrganizationConfiguration={'ConfigurationType': 'LOCAL'}
+                      )
+                      logger.info('Central configuration disabled (ConfigurationType=LOCAL)')
+                      return True
+                  except Exception as e:
+                      if time.time() - start_time >= max_wait_seconds:
+                          logger.error(f'Could not disable central configuration within '
+                                       f'{max_wait_seconds}s: {str(e)}')
+                          return False
+                      logger.info(f'Central config not yet disable-able (retrying): {str(e)}')
+                      time.sleep(10)
+
+          def count_policy_associations(policy_id):
+              """Count org-wide associations that still reference our policy.
+
+              list_configuration_policy_associations returns every association
+              across the org (root, OUs, accounts), paginated. We count only the
+              ones whose ConfigurationPolicyId is ours: once the root disassociation
+              has cascaded, targets revert to SELF_MANAGED_SECURITY_HUB, so our
+              policy simply drops out of the list. Raises on API error so the caller
+              can distinguish "couldn't confirm" from "confirmed zero".
+              """
+              count = 0
+              next_token = None
+              while True:
+                  kwargs = {'MaxResults': 100}
+                  if next_token:
+                      kwargs['NextToken'] = next_token
+                  resp = securityhub.list_configuration_policy_associations(**kwargs)
+                  for assoc in resp.get('ConfigurationPolicyAssociationSummaries', []):
+                      if assoc.get('ConfigurationPolicyId') == policy_id:
+                          count += 1
+                  next_token = resp.get('NextToken')
+                  if not next_token:
+                      break
+              return count
+
+          def wait_for_disassociation(policy_id, max_wait_seconds=420,
+                                      stable_polls=3, poll_interval=10):
+              """Poll until NO association references the policy, confirmed stable.
+
+              start_configuration_policy_disassociation is async and cascades to all
+              OUs/accounts, taking ~10-20s to fully clear. The count can read a
+              transient 0 within a couple of seconds while child associations are
+              still clearing; concluding "done" on that single 0 is exactly what
+              left the policy associated, made the subsequent delete_configuration_
+              policy 409, and wedged the stack INOPERABLE (issue #103 Round-4). So
+              we require the count to be 0 across `stable_polls` consecutive checks
+              before declaring completion. An API error is NOT treated as "done" and
+              resets the stability window; we keep polling until confirmed or timeout.
+              """
+              start_time = time.time()
+              consecutive_zero = 0
+
+              while time.time() - start_time < max_wait_seconds:
+                  try:
+                      remaining = count_policy_associations(policy_id)
+                      if remaining == 0:
+                          consecutive_zero += 1
+                          logger.info(f'0 associations for {policy_id} '
+                                      f'({consecutive_zero}/{stable_polls} stable checks)')
+                          if consecutive_zero >= stable_polls:
+                              logger.info('Disassociation confirmed stable - complete')
+                              return True
+                      else:
+                          if consecutive_zero:
+                              logger.info(f'Association count back to {remaining} - '
+                                          f'resetting stability window')
+                          consecutive_zero = 0
+                          logger.info(f'{remaining} association(s) still reference '
+                                      f'{policy_id}; waiting...')
+                  except Exception as e:
+                      # Could not confirm — keep polling rather than assuming success,
+                      # and reset the stability window.
+                      consecutive_zero = 0
+                      logger.warning(f'Error checking association status (will retry): {str(e)}')
+
+                  time.sleep(poll_interval)
+
+              logger.warning(f'Timeout waiting for disassociation after {max_wait_seconds}s')
+              return False
+
+          def delete_policy_with_retry(policy_id, max_wait_seconds=180, poll_interval=10):
+              """Delete the configuration policy, retrying while it is still associated.
+
+              Even after the association list reads 0, delete_configuration_policy can
+              briefly still raise ResourceConflictException ('Policy is associated with
+              one or more accounts') until the disassociation is fully committed.
+              Round-4 swallowed that conflict and moved on, leaving the policy in place
+              so central config could never be disabled (issue #103). Retry until the
+              policy is genuinely gone. Returns True once deleted (or already absent).
+              """
+              start_time = time.time()
+              while True:
+                  try:
+                      securityhub.delete_configuration_policy(Identifier=policy_id)
+                      logger.info('Configuration policy deleted successfully')
+                      return True
+                  except Exception as e:
+                      msg = str(e)
+                      if 'ResourceNotFound' in msg or 'does not exist' in msg:
+                          logger.info('Configuration policy already deleted')
+                          return True
+                      if time.time() - start_time >= max_wait_seconds:
+                          logger.error(f'Could not delete configuration policy within '
+                                       f'{max_wait_seconds}s: {msg}')
+                          return False
+                      logger.info(f'Policy not yet deletable (retrying): {msg}')
+                      time.sleep(poll_interval)
+          
+          def handler(event, context):
+              try:
+                  logger.info(f'Event: {json.dumps(event)}')
+                  request_type = event['RequestType']
+                  
+                  if request_type == 'Create':
+                      target_id = event['ResourceProperties']['TargetId']
+                      policy_id = event['ResourceProperties']['ConfigurationPolicyId']
+                      
+                      # Use StartConfigurationPolicyAssociation - async API
+                      response = securityhub.start_configuration_policy_association(
+                          ConfigurationPolicyIdentifier=policy_id,
+                          Target={
+                              'RootId': target_id
+                          }
+                      )
+                      
+                      # Log full response to understand structure
+                      logger.info(f'API Response: {json.dumps(response, default=str)}')
+                      
+                      # StartConfigurationPolicyAssociation returns association summary
+                      # Check for ConfigurationPolicyAssociationSummary or directly in response
+                      association_summary = response.get('ConfigurationPolicyAssociationSummary', response)
+                      association_status = association_summary.get('AssociationStatus', 'PENDING')
+                      association_id = f"{policy_id}-{target_id}"
+                      
+                      logger.info(f'Policy association status: {association_status}')
+                      
+                      # If API call succeeded but status is not explicit, treat as PENDING
+                      # The association will propagate asynchronously
+                      if association_status in ['SUCCESS', 'PENDING', 'FAILED']:
+                          actual_status = association_status
+                      else:
+                          # If status not in expected values, assume PENDING since API call succeeded
+                          logger.info('Status not in expected values, treating as PENDING')
+                          actual_status = 'PENDING'
+                      
+                      # Return SUCCESS for SUCCESS or PENDING status
+                      if actual_status in ['SUCCESS', 'PENDING']:
+                          logger.info(f'Association initiated: {actual_status}')
+                          logger.info('Association will propagate asynchronously (up to 24 hours)')
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, 
+                                          {
+                                              'AssociationId': association_id,
+                                              'Status': actual_status,
+                                              'Message': f'Association {actual_status}. Propagation continuing asynchronously.'
+                                          }, 
+                                          association_id)
+                      else:
+                          # FAILED status
+                          error_msg = f'Association failed with status: {actual_status}'
+                          logger.error(error_msg)
+                          cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                          {'Error': error_msg})
+                  
+                  elif request_type == 'Delete':
+                      target_id = event['ResourceProperties']['TargetId']
+                      policy_id = event['ResourceProperties']['ConfigurationPolicyId']
+
+                      logger.info(f'Delete requested - disassociating policy {policy_id} from {target_id}')
+
+                      # The teardown must run as a strictly gated sequence, because
+                      # every step depends on the previous one having actually
+                      # settled (issue #103 Round-4 failed by advancing on state
+                      # that had not): disassociate -> wait until NO association
+                      # references the policy (stable) -> delete the policy (retry
+                      # while still associated) -> disable central config (LOCAL).
+                      # Report SUCCESS only once LOCAL is confirmed; otherwise FAILED
+                      # so the stuck state surfaces here (02) instead of silently
+                      # leaving the org CENTRAL and wedging security/01.
+
+                      # Step 1: kick off async disassociation at the root (cascades
+                      # org-wide). A failure here usually means it is already gone;
+                      # the wait below is what actually confirms the end state.
+                      try:
+                          response = securityhub.start_configuration_policy_disassociation(
+                              ConfigurationPolicyIdentifier=policy_id,
+                              Target={
+                                  'RootId': target_id
+                              }
+                          )
+                          logger.info(f'Policy disassociation initiated: {response}')
+                      except Exception as e:
+                          logger.warning(f'start_configuration_policy_disassociation error '
+                                         f'(may already be disassociated): {str(e)}')
+
+                      # Step 2: wait until no association references the policy,
+                      # confirmed by a stability window (the disassociation is
+                      # eventually-consistent and a transient 0 is not sufficient).
+                      logger.info('Waiting for disassociation to complete...')
+                      if not wait_for_disassociation(policy_id):
+                          cfnresponse.send(event, context, cfnresponse.FAILED,
+                                          {'Status': 'DisassociationTimeout',
+                                           'Error': 'Policy associations did not clear; cannot '
+                                                    'delete the policy or disable central '
+                                                    'configuration. Disassociate the policy at '
+                                                    'the org root, then retry the stack delete.'})
+                          return
+
+                      # Step 3: delete the policy, retrying while it is still
+                      # associated (the conflict clears once disassociation commits).
+                      logger.info(f'Deleting configuration policy {policy_id}')
+                      if not delete_policy_with_retry(policy_id):
+                          cfnresponse.send(event, context, cfnresponse.FAILED,
+                                          {'Status': 'PolicyDeleteTimeout',
+                                           'Error': 'Configuration policy still associated; could '
+                                                    'not delete it. Disassociate + delete the '
+                                                    'policy, then retry the stack delete.'})
+                          return
+
+                      # Step 4: disable central configuration (CENTRAL -> LOCAL).
+                      # Only now can this succeed, and it is what unblocks removal of
+                      # the delegated admin in security/01 (issue #103).
+                      if disable_central_configuration():
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                                          {'Status': 'DisassociatedAndDeleted'})
+                      else:
+                          cfnresponse.send(event, context, cfnresponse.FAILED,
+                                          {'Status': 'CentralConfigDisableTimeout',
+                                           'Error': 'Could not disable central configuration '
+                                                    'after deleting the policy. Retry the '
+                                                    'stack delete.'})
+
+                  else:  # Update
+                      logger.info('Update requested - no action needed')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      
+              except Exception as e:
+                  logger.error(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # Custom resource using async API
+  SecurityHubPolicyAssociation:
+    Type: Custom::SecurityHubPolicyAssociation
+    DependsOn: SecurityHubConfigurationPolicy
+    Properties:
+      ServiceToken: !GetAtt PolicyAssociationLambda.Arn
+      TargetId: !Ref uRootOuId
+      ConfigurationPolicyId: !GetAtt SecurityHubConfigurationPolicy.Id
+
+Outputs:
+  FindingAggregatorArn:
+    Description: Security Hub Finding Aggregator ARN
+    Value: !GetAtt SecurityHubFindingAggregator.FindingAggregatorArn
+  
+  PolicyAssociationId:
+    Description: Security Hub Policy Association ID
+    Value: !GetAtt SecurityHubPolicyAssociation.AssociationId
+  
+  PolicyAssociationStatus:
+    Description: Association status (SUCCESS or PENDING)
+    Value: !GetAtt SecurityHubPolicyAssociation.Status

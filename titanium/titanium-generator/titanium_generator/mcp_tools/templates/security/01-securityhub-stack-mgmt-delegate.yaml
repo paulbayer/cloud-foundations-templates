@@ -1,0 +1,294 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Security Hub delegation for BOTH CSPM and unified Security Hub services'
+
+Metadata:
+  DeploymentTarget: "Management"
+  DeploymentType: "Stack"
+  DeploymentOrder: 1
+  Prerequisites:
+    - "AWS Control Tower deployed"
+    - "AWS Organizations enabled"
+  Comment: |
+    This template delegates Security Hub administration to the audit/security account.
+    
+    IMPORTANT: Delegating in Security Hub CSPM automatically delegates in the new 
+    Security Hub (unified service). This single template handles delegation for BOTH services.
+    
+    Reference: https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-v2-set-da.html
+    
+    What this template does:
+    1. Delegates Security Hub CSPM to the specified security account
+    2. Automatically delegates new Security Hub to the same account (AWS behavior)
+    3. Creates Organizations ResourcePolicy for delegated admin permissions
+    
+    Deploy to: Management Account (Stack)
+
+Parameters:
+  uSecurityAccountId:
+    Type: String
+    Description: Security account ID to delegate Security Hub to
+  
+  uOrganizationId:
+    Type: String
+    Description: AWS Organization ID (e.g., o-abc123xyz)
+  
+  uSecurityHubRoleName:
+    Type: String
+    Description: IAM role name in security account for Security Hub operations
+    Default: sra-securityhub-org-configuration
+
+Resources:
+  # Lambda role for Security Hub cleanup
+  SecurityHubCleanupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SecurityHubCleanupPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - securityhub:DisableOrganizationAdminAccount
+                  - securityhub:ListOrganizationAdminAccounts
+                  # Deregister the Organizations-level delegated administrator on
+                  # teardown so it does not orphan and accumulate (issue #111).
+                  - organizations:ListDelegatedAdministrators
+                  - organizations:DeregisterDelegatedAdministrator
+                  - sts:AssumeRole
+                Resource: '*'
+
+  # Lambda function for Security Hub cleanup
+  SecurityHubCleanupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt SecurityHubCleanupLambdaRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+          import time
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          def handler(event, context):
+              try:
+                  logger.info(f'Event: {event}')
+                  
+                  if event['RequestType'] == 'Delete':
+                      admin_account_id = event['ResourceProperties']['AdminAccountId']
+                      role_name = event['ResourceProperties'].get('RoleName', 'sra-securityhub-org-configuration')
+                      
+                      logger.info(f'Cleaning up Security Hub delegation for account {admin_account_id}')
+                      
+                      # Step 1: Assume role in delegated admin account to disable organization config
+                      try:
+                          sts_client = boto3.client('sts')
+                          role_arn = f'arn:aws:iam::{admin_account_id}:role/{role_name}'
+                          
+                          assumed_role = sts_client.assume_role(
+                              RoleArn=role_arn,
+                              RoleSessionName='SecurityHubCleanup'
+                          )
+                          
+                          admin_securityhub = boto3.client(
+                              'securityhub',
+                              aws_access_key_id=assumed_role['Credentials']['AccessKeyId'],
+                              aws_secret_access_key=assumed_role['Credentials']['SecretAccessKey'],
+                              aws_session_token=assumed_role['Credentials']['SessionToken']
+                          )
+                          
+                          # Disable organization configuration
+                          logger.info('Disabling Security Hub organization configuration')
+                          admin_securityhub.update_organization_configuration(
+                              AutoEnable=False,
+                              AutoEnableStandards='NONE'
+                          )
+                          
+                          # List and disassociate members
+                          logger.info('Disassociating member accounts')
+                          members = admin_securityhub.list_members()
+                          if members.get('Members'):
+                              account_ids = [m['AccountId'] for m in members['Members']]
+                              admin_securityhub.disassociate_members(AccountIds=account_ids)
+                              logger.info(f'Disassociated {len(account_ids)} members')
+                          
+                      except Exception as e:
+                          logger.warning(f'Error during admin account cleanup: {e}')
+                      
+                      # Step 2: Disable delegated admin from management account
+                      try:
+                          securityhub = boto3.client('securityhub')
+                          logger.info('Disabling Security Hub delegated admin')
+                          securityhub.disable_organization_admin_account(
+                              AdminAccountId=admin_account_id
+                          )
+                          logger.info('Security Hub delegated admin disabled')
+
+                          # Poll until the deregistration propagates. The native
+                          # AWS::SecurityHub::DelegatedAdmin resource is deleted right
+                          # after this custom resource (it DependsOn it), and it
+                          # DELETE_FAILs if the account is still the org admin. The
+                          # disable is eventually consistent, so wait (bounded, best
+                          # effort) for it to settle before returning SUCCESS so the
+                          # native delete does not race it (issue #103).
+                          for _ in range(12):  # up to ~60s (12 x 5s)
+                              admins = securityhub.list_organization_admin_accounts().get('AdminAccounts', [])
+                              if not any(a.get('AccountId') == admin_account_id for a in admins):
+                                  logger.info('Delegated admin deregistration propagated')
+                                  break
+                              logger.info('Waiting for delegated admin deregistration to propagate...')
+                              time.sleep(5)
+                          else:
+                              logger.warning('Delegated admin still registered after wait; '
+                                             'native delete may need a retry')
+                      except Exception as e:
+                          logger.warning(f'Error disabling delegated admin: {e}')
+
+                      # Step 3: Deregister the Organizations-level delegated admin.
+                      # disable_organization_admin_account (above) removes the
+                      # Security Hub service-level admin but leaves the Organizations
+                      # register-delegated-administrator entry for
+                      # securityhub.amazonaws.com, which otherwise orphans and
+                      # accumulates across deploy/teardown cycles (issue #111).
+                      # Guarded + best-effort; never fatal. Leave config -> Audit
+                      # alone (Control Tower manages it).
+                      try:
+                          orgs = boto3.client('organizations')
+                          service_principal = 'securityhub.amazonaws.com'
+                          registered = orgs.list_delegated_administrators(
+                              ServicePrincipal=service_principal
+                          ).get('DelegatedAdministrators', [])
+                          if any(a.get('Id') == admin_account_id for a in registered):
+                              orgs.deregister_delegated_administrator(
+                                  AccountId=admin_account_id,
+                                  ServicePrincipal=service_principal
+                              )
+                              logger.info('Deregistered Organizations delegated admin for securityhub')
+                          else:
+                              logger.info('No Organizations delegated admin registration for securityhub')
+                      except Exception as e:
+                          logger.warning(f'Error deregistering Organizations delegated admin: {e}')
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  else:
+                      # Create/Update - no action needed
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      
+              except Exception as e:
+                  logger.error(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # Custom resource to trigger cleanup
+  SecurityHubCleanupTrigger:
+    Type: Custom::SecurityHubCleanup
+    DependsOn: SecurityHubDelegatedAdmin
+    Properties:
+      ServiceToken: !GetAtt SecurityHubCleanupLambda.Arn
+      AdminAccountId: !Ref uSecurityAccountId
+      RoleName: !Ref uSecurityHubRoleName
+
+  SecurityHubDelegatedAdmin:
+    Type: 'AWS::SecurityHub::DelegatedAdmin'
+    Properties:
+      AdminAccountId: !Ref uSecurityAccountId
+
+  SecurityHubOrganizationsDelegationPolicy:
+    Type: AWS::Organizations::ResourcePolicy
+    DependsOn: SecurityHubDelegatedAdmin
+    Properties:
+      Content:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SecurityServicesDelegatingOrgReadActions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${uSecurityAccountId}:root'
+            Action: 'organizations:ListRoots'
+            Resource: '*'
+          
+          - Sid: SecurityServicesDelegatingNecessaryOrgManagementActions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${uSecurityAccountId}:root'
+            Action:
+              - 'organizations:DescribeOrganization'
+              - 'organizations:DescribeOrganizationalUnit'
+              - 'organizations:DescribeAccount'
+              - 'organizations:ListRoots'
+              - 'organizations:ListOrganizationalUnitsForParent'
+              - 'organizations:ListParents'
+              - 'organizations:ListChildren'
+              - 'organizations:ListAccounts'
+              - 'organizations:ListAccountsForParent'
+              - 'organizations:ListTagsForResource'
+              - 'organizations:ListDelegatedAdministrators'
+              - 'organizations:ListHandshakesForAccount'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:root/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:organization/${uOrganizationId}'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:ou/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:account/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/securityhub_policy/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/inspector_policy/*'
+          
+          - Sid: SecurityServicesDelegatingPolicyDescribeActions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${uSecurityAccountId}:root'
+            Action:
+              - 'organizations:DescribePolicy'
+              - 'organizations:DescribeEffectivePolicy'
+              - 'organizations:ListPolicies'
+              - 'organizations:ListPoliciesForTarget'
+              - 'organizations:ListTargetsForPolicy'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:root/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:ou/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:account/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/securityhub_policy/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/inspector_policy/*'
+          
+          - Sid: SecurityServicesDelegatingPolicyMutationActions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${uSecurityAccountId}:root'
+            Action:
+              - 'organizations:CreatePolicy'
+              - 'organizations:UpdatePolicy'
+              - 'organizations:DeletePolicy'
+              - 'organizations:AttachPolicy'
+              - 'organizations:DetachPolicy'
+              - 'organizations:EnablePolicyType'
+              - 'organizations:DisablePolicyType'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:root/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:ou/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:account/${uOrganizationId}/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/securityhub_policy/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/inspector_policy/*'
+          
+          - Sid: SecurityServicesDelegatingPolicyTagActions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${uSecurityAccountId}:root'
+            Action:
+              - 'organizations:TagResource'
+              - 'organizations:UntagResource'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/securityhub_policy/*'
+              - !Sub 'arn:${AWS::Partition}:organizations::${AWS::AccountId}:policy/${uOrganizationId}/inspector_policy/*'

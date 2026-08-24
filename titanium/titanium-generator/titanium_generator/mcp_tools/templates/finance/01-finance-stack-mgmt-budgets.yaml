@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Budgets - Monthly cost budget with SNS notification alerts in Management account'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Budget Configuration"
+        Parameters:
+          - tBudgetName
+          - tBudgetAmount
+          - tBudgetTimeUnit
+          - tBudgetUnit
+      - Label:
+          default: "Alert Configuration"
+        Parameters:
+          - tDeployBudgetAlerts
+          - tBudgetAlertThreshold
+          - tBudgetNotificationType
+          - uBudgetAlertEmail
+    ParameterLabels:
+      tBudgetName:
+        default: "Budget Name"
+      tBudgetAmount:
+        default: "Budget Amount"
+      tBudgetTimeUnit:
+        default: "Budget Period"
+      tBudgetUnit:
+        default: "Currency"
+      tDeployBudgetAlerts:
+        default: "Enable Budget Alerts"
+      tBudgetAlertThreshold:
+        default: "Alert Threshold (%)"
+      tBudgetNotificationType:
+        default: "Notification Type"
+      uBudgetAlertEmail:
+        default: "Alert Email Address"
+
+Parameters:
+  tBudgetName:
+    Type: String
+    Default: "accel-budget"
+    Description: "Name of the budget"
+
+  tBudgetAmount:
+    Type: Number
+    Default: 2000
+    Description: "Budget amount in specified currency"
+
+  tBudgetTimeUnit:
+    Type: String
+    Default: "MONTHLY"
+    AllowedValues: ["MONTHLY", "QUARTERLY", "ANNUALLY"]
+    Description: "Budget period"
+
+  tBudgetUnit:
+    Type: String
+    Default: "USD"
+    Description: "Currency unit for the budget"
+
+  tDeployBudgetAlerts:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Enable budget alert notifications"
+
+  tBudgetAlertThreshold:
+    Type: Number
+    Default: 80
+    Description: "Percentage threshold for budget alerts"
+
+  tBudgetNotificationType:
+    Type: String
+    Default: "ACTUAL"
+    AllowedValues: ["ACTUAL", "FORECASTED"]
+    Description: "Whether alerts are based on actual or forecasted spend"
+
+  uBudgetAlertEmail:
+    Type: String
+    Default: ""
+    Description: "Email address for budget alert notifications"
+
+Conditions:
+  AlertsEnabled: !Equals [!Ref tDeployBudgetAlerts, "true"]
+  HasAlertEmail: !Not [!Equals [!Ref uBudgetAlertEmail, ""]]
+  DeployAlerts: !And
+    - !Condition AlertsEnabled
+    - !Condition HasAlertEmail
+
+Resources:
+  BudgetAlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: DeployAlerts
+    Properties:
+      TopicName: !Sub "${tBudgetName}-alerts"
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  BudgetAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: DeployAlerts
+    Properties:
+      TopicArn: !Ref BudgetAlertTopic
+      Protocol: email
+      Endpoint: !Ref uBudgetAlertEmail
+
+  BudgetAlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: DeployAlerts
+    Properties:
+      Topics:
+        - !Ref BudgetAlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBudgetsPublish
+            Effect: Allow
+            Principal:
+              Service: budgets.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref BudgetAlertTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Ref tBudgetName
+        BudgetType: COST
+        TimeUnit: !Ref tBudgetTimeUnit
+        BudgetLimit:
+          Amount: !Ref tBudgetAmount
+          Unit: !Ref tBudgetUnit
+        CostTypes:
+          IncludeTax: true
+          IncludeSubscription: true
+          UseBlended: false
+          IncludeRefund: false
+          IncludeCredit: false
+          IncludeUpfront: true
+          IncludeRecurring: true
+          IncludeOtherSubscription: true
+          IncludeSupport: true
+          IncludeDiscount: true
+          UseAmortized: false
+      NotificationsWithSubscribers: !If
+        - DeployAlerts
+        - - Notification:
+              NotificationType: !Ref tBudgetNotificationType
+              ComparisonOperator: GREATER_THAN
+              Threshold: !Ref tBudgetAlertThreshold
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: SNS
+                Address: !Ref BudgetAlertTopic
+        - !Ref AWS::NoValue
+
+Outputs:
+  BudgetName:
+    Description: Name of the budget
+    Value: !Ref tBudgetName
+
+  BudgetAmount:
+    Description: Budget amount
+    Value: !Ref tBudgetAmount
+
+  AlertTopicArn:
+    Description: ARN of the budget alert SNS topic
+    Condition: DeployAlerts
+    Value: !Ref BudgetAlertTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-AlertTopicArn"

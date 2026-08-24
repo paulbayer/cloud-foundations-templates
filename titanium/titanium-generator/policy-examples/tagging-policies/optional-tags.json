@@ -1,0 +1,31 @@
+{
+  "tags": {
+    "Owner": {
+      "tag_key": {
+        "@@assign": "Owner"
+      },
+      "enforced_for": {
+        "@@assign": ["ec2:*", "s3:*", "rds:*"]
+      }
+    },
+    "Application": {
+      "tag_key": {
+        "@@assign": "Application"
+      },
+      "enforced_for": {
+        "@@assign": ["ec2:instance", "lambda:function", "ecs:service"]
+      }
+    },
+    "ManagedBy": {
+      "tag_key": {
+        "@@assign": "ManagedBy"
+      },
+      "tag_value": {
+        "@@assign": ["Terraform", "CloudFormation", "Manual"]
+      },
+      "enforced_for": {
+        "@@assign": ["*"]
+      }
+    }
+  }
+}

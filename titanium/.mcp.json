@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "titanium-advisor": {
+      "command": "bash",
+      "args": ["-c", "cd \"$(git rev-parse --show-toplevel)/titanium/titanium-advisor/mcp-server\" && .venv/bin/python server.py"],
+      "env": {}
+    },
+    "titanium-generator": {
+      "command": "bash",
+      "args": ["-c", "cd \"$(git rev-parse --show-toplevel)/titanium/titanium-generator\" && PYTHONPATH=. .venv/bin/python mcp_server.py"],
+      "env": {}
+    }
+  }
+}

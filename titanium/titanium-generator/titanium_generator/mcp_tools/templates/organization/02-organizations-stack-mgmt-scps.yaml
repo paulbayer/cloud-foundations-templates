@@ -1,0 +1,691 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Service Control Policies - Consolidated template for organization-wide SCPs with parameterized deployment'
+
+Parameters:
+  # Global parameters
+  uOrganizationId:
+    Type: String
+    Description: AWS Organization ID
+    Default: ''
+
+  # SSM Parameter Store path for OU IDs
+  uSSMParameterPrefix:
+    Type: String
+    Default: "/titanium/organization/ou-ids"
+    Description: "SSM Parameter Store path prefix where OU IDs are stored"
+  
+  # Prevent Leave Organization SCP Parameters
+  tDeployPreventLeaveOrganization:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of PreventLeaveOrganization policy - Prevent member accounts from leaving the organization"
+  
+  uPreventLeaveOrganizationTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for PreventLeaveOrganization policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+  # Prevent Public S3 SCP Parameters
+  tDeployPreventPublicS3:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of PreventPublicS3 policy - Prevent creation of public S3 buckets and block public access"
+  
+  uPreventPublicS3Targets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for PreventPublicS3 policy (comma-separated OU IDs - resolved from bootstrap.organizationMapping)"
+
+  # Deny Public Resources SCP Parameters
+  tDeployDenyPublicResources:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of DenyPublicResources policy - Deny deployment or configuration of publicly accessible resources (EC2, RDS, Lambda, etc.)"
+  
+  uDenyPublicResourcesTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for DenyPublicResources policy (comma-separated OU IDs)"
+
+  # Deny User Creation Without SSO Parameters
+  tDeployDenyUserCreationWithoutSSO:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of DenyUserCreationWithoutSSO policy - Deny user creation outside of SSO"
+  
+  uDenyUserCreationWithoutSSOTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for DenyUserCreationWithoutSSO policy (comma-separated OU IDs)"
+
+  # Deny VPC Without IPAM Parameters
+  tDeployDenyVPCWithoutIPAM:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of DenyVPCWithoutIPAM policy - Deny VPC creation without using IPAM pool"
+  
+  uDenyVPCWithoutIPAMTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for DenyVPCWithoutIPAM policy (comma-separated OU IDs)"
+
+  # Limit Region Usage Parameters
+  tDeployLimitRegionUsage:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of LimitRegionUsage policy - Deny access to AWS based on the requested AWS Region"
+  
+  uLimitRegionUsageTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for LimitRegionUsage policy (comma-separated OU IDs)"
+  
+  tLimitRegionUsageAllowedRegions:
+    Type: CommaDelimitedList
+    # The generator overrides this default with the config's enabledRegions plus
+    # us-east-1 (issue #101). us-east-1 is always included because global-service
+    # control-plane endpoints (IAM, CloudFront, Route53, STS) route through it and
+    # would otherwise be denied. This literal default is only a fallback for
+    # hand-run templates that skip the generator.
+    Default: "us-east-1,us-west-2"
+    Description: "Allowed regions for LimitRegionUsage policy (generator-derived from enabledRegions + us-east-1 for global services)"
+
+  # Prevent CloudTrail Disablement Parameters
+  tDeployPreventCloudTrailDisablement:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of PreventCloudTrailDisablement policy - Prevent users from disabling CloudTrail or altering its configuration"
+  
+  uPreventCloudTrailDisablementTargets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Deployment targets for PreventCloudTrailDisablement policy (comma-separated OU IDs)"
+
+Conditions:
+  CreatePreventLeaveOrganization: !Equals [!Ref tDeployPreventLeaveOrganization, "true"]
+  CreatePreventPublicS3: !Equals [!Ref tDeployPreventPublicS3, "true"]
+  CreateDenyPublicResources: !Equals [!Ref tDeployDenyPublicResources, "true"]
+  CreateDenyUserCreationWithoutSSO: !Equals [!Ref tDeployDenyUserCreationWithoutSSO, "true"]
+  CreateDenyVPCWithoutIPAM: !Equals [!Ref tDeployDenyVPCWithoutIPAM, "true"]
+  CreateLimitRegionUsage: !Equals [!Ref tDeployLimitRegionUsage, "true"]
+  CreatePreventCloudTrailDisablement: !Equals [!Ref tDeployPreventCloudTrailDisablement, "true"]
+
+Resources:
+  # Prevent Leave Organization SCP
+  PreventLeaveOrganizationPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreatePreventLeaveOrganization
+    Properties:
+      Name: PreventLeaveOrganization
+      Description: "Prevent member accounts from leaving the organization"
+      Type: SERVICE_CONTROL_POLICY
+      Content: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": [
+                "organizations:LeaveOrganization"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Prevent Public S3 SCP
+  PreventPublicS3Policy:
+    Type: AWS::Organizations::Policy
+    Condition: CreatePreventPublicS3
+    Properties:
+      Name: PreventPublicS3
+      Description: "Prevent creation of public S3 buckets and block public access"
+      Type: SERVICE_CONTROL_POLICY
+      Content: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyS3PublicBucket",
+              "Effect": "Deny",
+              "Action": [
+                "s3:PutBucketPublicAccessBlock",
+                "s3:PutAccountPublicAccessBlock"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Deny Public Resources SCP
+  DenyPublicResourcesPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateDenyPublicResources
+    Properties:
+      Name: DenyPublicResources
+      Description: "Deny deployment or configuration of publicly accessible resources (EC2, RDS, Lambda, etc.)"
+      Type: SERVICE_CONTROL_POLICY
+      Content: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyEC2PublicIP",
+              "Effect": "Deny",
+              "Action": [
+                "ec2:RunInstances"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "Bool": {
+                  "ec2:AssociatePublicIpAddress": "true"
+                }
+              }
+            },
+            {
+              "Sid": "DenyElasticIPOperations",
+              "Effect": "Deny",
+              "Action": [
+                "ec2:AssociateAddress",
+                "ec2:AllocateAddress"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyRDSPublicSnapshot",
+              "Effect": "Deny",
+              "Action": [
+                "rds:ModifyDBSnapshotAttribute",
+                "rds:ModifyDBClusterSnapshotAttribute"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyEBSPublicSnapshot",
+              "Effect": "Deny",
+              "Action": [
+                "ec2:ModifySnapshotAttribute"
+              ],
+              "Resource": [
+                "arn:aws:ec2:*:*:snapshot/*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "ec2:Add/group": "all"
+                }
+              }
+            },
+            {
+              "Sid": "DenyLambdaPublicFunctionURLs",
+              "Effect": "Deny",
+              "Action": [
+                "lambda:CreateFunctionUrlConfig",
+                "lambda:UpdateFunctionUrlConfig"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "lambda:FunctionUrlAuthType": "NONE"
+                }
+              }
+            },
+            {
+              "Sid": "DenyPublicECRRepositories",
+              "Effect": "Deny",
+              "Action": [
+                "ecr-public:CreateRepository"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenySubnetAutoAssignPublicIP",
+              "Effect": "Deny",
+              "Action": [
+                "ec2:CreateSubnet",
+                "ec2:ModifySubnetAttribute"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "ec2:Attribute/MapPublicIpOnLaunch": "true"
+                }
+              }
+            }
+          ]
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Deny User Creation Without SSO SCP
+  DenyUserCreationWithoutSSOPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateDenyUserCreationWithoutSSO
+    Properties:
+      Name: DenyUserCreationWithoutSSO
+      Description: "Deny user creation outside of SSO"
+      Type: SERVICE_CONTROL_POLICY
+      Content: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyUserNoSSO",
+              "Effect": "Deny",
+              "Action": [
+                "iam:CreateUser",
+                "iam:CreateAccessKey",
+                "iam:DeleteAccessKey",
+                "iam:DeleteUser"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringNotLike": {
+                  "aws:PrincipalArn": [
+                    "arn:aws:iam::*:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_BreakGlassUser*"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Deny VPC Without IPAM SCP
+  DenyVPCWithoutIPAMPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateDenyVPCWithoutIPAM
+    Properties:
+      Name: DenyVPCWithoutIPAM
+      Description: "Deny VPC creation without using IPAM pool"
+      Type: SERVICE_CONTROL_POLICY
+      Content: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": [
+                "ec2:CreateVpc",
+                "ec2:AssociateVpcCidrBlock"
+              ],
+              "Resource": "arn:aws:ec2:*:*:vpc/*",
+              "Condition": {
+                "Null": {
+                  "ec2:Ipv4IpamPoolId": "true"
+                }
+              }
+            }
+          ]
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Limit Region Usage SCP
+  LimitRegionUsagePolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreateLimitRegionUsage
+    Properties:
+      Name: LimitRegionUsage
+      Description: "Deny access to AWS based on the requested AWS Region"
+      Type: SERVICE_CONTROL_POLICY
+      Content: !Sub
+        - |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "DenyAllOutsideAllowedRegions",
+                "Effect": "Deny",
+                "NotAction": [
+                  "a4b:*",
+                  "acm:*",
+                  "aws-marketplace-management:*",
+                  "aws-marketplace:*",
+                  "aws-portal:*",
+                  "budgets:*",
+                  "ce:*",
+                  "chime:*",
+                  "cloudfront:*",
+                  "config:*",
+                  "cur:*",
+                  "directconnect:*",
+                  "ec2:DescribeRegions",
+                  "ec2:DescribeTransitGateways",
+                  "ec2:DescribeVpnGateways",
+                  "fms:*",
+                  "globalaccelerator:*",
+                  "health:*",
+                  "iam:*",
+                  "importexport:*",
+                  "kms:*",
+                  "mobileanalytics:*",
+                  "networkmanager:*",
+                  "organizations:*",
+                  "pricing:*",
+                  "route53:*",
+                  "route53domains:*",
+                  "route53-recovery-cluster:*",
+                  "route53-recovery-control-config:*",
+                  "route53-recovery-readiness:*",
+                  "s3:GetAccountPublic*",
+                  "s3:ListAllMyBuckets",
+                  "s3:ListMultiRegionAccessPoints",
+                  "s3:PutAccountPublic*",
+                  "shield:*",
+                  "sts:*",
+                  "support:*",
+                  "trustedadvisor:*",
+                  "waf-regional:*",
+                  "waf:*",
+                  "wafv2:*",
+                  "wellarchitected:*"
+                ],
+                "Resource": "*",
+                "Condition": {
+                  "StringNotEquals": {
+                    "aws:RequestedRegion": ["${AllowedRegions}"]
+                  }
+                }
+              }
+            ]
+          }
+        - AllowedRegions: !Join
+            - '","'
+            - !Ref tLimitRegionUsageAllowedRegions
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Prevent CloudTrail Disablement SCP
+  PreventCloudTrailDisablementPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: CreatePreventCloudTrailDisablement
+    Properties:
+      Name: PreventCloudTrailDisablement
+      Description: "Prevent users from disabling CloudTrail or altering its configuration"
+      Type: SERVICE_CONTROL_POLICY
+      Content: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": [
+                "cloudtrail:DeleteTrail",
+                "cloudtrail:PutEventSelectors",
+                "cloudtrail:StopLogging",
+                "cloudtrail:UpdateTrail"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+        - Key: DoNotDelete
+          Value: "True"
+
+  # Custom Resource for Policy Attachments
+  PolicyAttachmentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TitaniumSCPAttachment
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+
+          def resolve_target(target_id, org_client):
+              """Resolve target keywords to actual IDs.
+              
+              'Root' -> actual root ID (r-xxxx)
+              OU IDs and account IDs pass through unchanged.
+              """
+              if not target_id:
+                  return None
+              if target_id.lower() == 'root':
+                  roots = org_client.list_roots()['Roots']
+                  if roots:
+                      return roots[0]['Id']
+                  return None
+              return target_id
+
+          def handler(event, context):
+              try:
+                  organizations = boto3.client('organizations')
+                  request_type = event['RequestType']
+                  properties = event['ResourceProperties']
+                  
+                  # Get all SCPs and their targets
+                  scps_to_attach = []
+                  
+                  if properties.get('AttachPreventLeaveOrganization') == 'true':
+                      scps_to_attach.append({
+                          'PolicyId': properties['PreventLeaveOrganizationPolicyId'],
+                          'Targets': properties.get('PreventLeaveOrganizationTargets', [])
+                      })
+                  
+                  if properties.get('AttachPreventPublicS3') == 'true':
+                      scps_to_attach.append({
+                          'PolicyId': properties['PreventPublicS3PolicyId'],
+                          'Targets': properties.get('PreventPublicS3Targets', [])
+                      })
+                  
+                  if properties.get('AttachDenyPublicResources') == 'true':
+                      scps_to_attach.append({
+                          'PolicyId': properties['DenyPublicResourcesPolicyId'],
+                          'Targets': properties.get('DenyPublicResourcesTargets', [])
+                      })
+                  
+                  if properties.get('AttachDenyUserCreationWithoutSSO') == 'true':
+                      scps_to_attach.append({
+                          'PolicyId': properties['DenyUserCreationWithoutSSOPolicyId'],
+                          'Targets': properties.get('DenyUserCreationWithoutSSOTargets', [])
+                      })
+                  
+                  if properties.get('AttachDenyVPCWithoutIPAM') == 'true':
+                      scps_to_attach.append({
+                          'PolicyId': properties['DenyVPCWithoutIPAMPolicyId'],
+                          'Targets': properties.get('DenyVPCWithoutIPAMTargets', [])
+                      })
+                  
+                  if properties.get('AttachLimitRegionUsage') == 'true':
+                      scps_to_attach.append({
+                          'PolicyId': properties['LimitRegionUsagePolicyId'],
+                          'Targets': properties.get('LimitRegionUsageTargets', [])
+                      })
+                  
+                  if properties.get('AttachPreventCloudTrailDisablement') == 'true':
+                      scps_to_attach.append({
+                          'PolicyId': properties['PreventCloudTrailDisablementPolicyId'],
+                          'Targets': properties.get('PreventCloudTrailDisablementTargets', [])
+                      })
+                  
+                  attach_errors = []
+                  
+                  if request_type in ['Create', 'Update']:
+                      # Attach policies to targets
+                      for scp in scps_to_attach:
+                          for target in scp['Targets']:
+                              if target:  # Skip empty targets
+                                  resolved = resolve_target(target, organizations)
+                                  if not resolved:
+                                      attach_errors.append(f"Could not resolve target '{target}' for policy {scp['PolicyId']}")
+                                      continue
+                                  try:
+                                      organizations.attach_policy(
+                                          PolicyId=scp['PolicyId'],
+                                          TargetId=resolved
+                                      )
+                                      print(f"Attached policy {scp['PolicyId']} to {resolved}")
+                                  except organizations.exceptions.DuplicatePolicyAttachmentException:
+                                      # Policy already attached, continue
+                                      print(f"Policy {scp['PolicyId']} already attached to {resolved}")
+                                  except Exception as e:
+                                      attach_errors.append(f"Error attaching policy {scp['PolicyId']} to {resolved}: {str(e)}")
+                  
+                  elif request_type == 'Delete':
+                      # Detach policies from targets (best-effort, do not fail on errors)
+                      for scp in scps_to_attach:
+                          for target in scp['Targets']:
+                              if target:  # Skip empty targets
+                                  resolved = resolve_target(target, organizations)
+                                  if not resolved:
+                                      print(f"Could not resolve target '{target}' for detach, skipping")
+                                      continue
+                                  try:
+                                      organizations.detach_policy(
+                                          PolicyId=scp['PolicyId'],
+                                          TargetId=resolved
+                                      )
+                                  except organizations.exceptions.PolicyNotAttachedException:
+                                      # Policy not attached, continue
+                                      pass
+                                  except Exception as e:
+                                      print(f"Error detaching policy {scp['PolicyId']} from {resolved}: {str(e)}")
+                  
+                  # Fail loudly if any attach errors occurred
+                  if attach_errors:
+                      error_msg = "; ".join(attach_errors)
+                      print(f"Attachment failures: {error_msg}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {'error': error_msg})
+                      return
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'error': str(e)})
+
+      Timeout: 300
+      MemorySize: 128
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: TitaniumSCPAttachmentRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TitaniumSCPOrganizationsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:AttachPolicy
+                  - organizations:DetachPolicy
+                  - organizations:ListPolicies
+                  - organizations:ListTargetsForPolicy
+                  - organizations:ListRoots
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: Titanium
+
+  # Custom Resource for Attaching Policies
+  PolicyAttachments:
+    Type: Custom::PolicyAttachments
+    Properties:
+      ServiceToken: !GetAtt PolicyAttachmentFunction.Arn
+      # Prevent Leave Organization
+      AttachPreventLeaveOrganization: !Ref tDeployPreventLeaveOrganization
+      PreventLeaveOrganizationPolicyId: !If [CreatePreventLeaveOrganization, !Ref PreventLeaveOrganizationPolicy, ""]
+      PreventLeaveOrganizationTargets: !Ref uPreventLeaveOrganizationTargets
+      # Prevent Public S3
+      AttachPreventPublicS3: !Ref tDeployPreventPublicS3
+      PreventPublicS3PolicyId: !If [CreatePreventPublicS3, !Ref PreventPublicS3Policy, ""]
+      PreventPublicS3Targets: !Ref uPreventPublicS3Targets
+      # Deny Public Resources
+      AttachDenyPublicResources: !Ref tDeployDenyPublicResources
+      DenyPublicResourcesPolicyId: !If [CreateDenyPublicResources, !Ref DenyPublicResourcesPolicy, ""]
+      DenyPublicResourcesTargets: !Ref uDenyPublicResourcesTargets
+      # Deny User Creation Without SSO
+      AttachDenyUserCreationWithoutSSO: !Ref tDeployDenyUserCreationWithoutSSO
+      DenyUserCreationWithoutSSOPolicyId: !If [CreateDenyUserCreationWithoutSSO, !Ref DenyUserCreationWithoutSSOPolicy, ""]
+      DenyUserCreationWithoutSSOTargets: !Ref uDenyUserCreationWithoutSSOTargets
+      # Deny VPC Without IPAM
+      AttachDenyVPCWithoutIPAM: !Ref tDeployDenyVPCWithoutIPAM
+      DenyVPCWithoutIPAMPolicyId: !If [CreateDenyVPCWithoutIPAM, !Ref DenyVPCWithoutIPAMPolicy, ""]
+      DenyVPCWithoutIPAMTargets: !Ref uDenyVPCWithoutIPAMTargets
+      # Limit Region Usage
+      AttachLimitRegionUsage: !Ref tDeployLimitRegionUsage
+      LimitRegionUsagePolicyId: !If [CreateLimitRegionUsage, !Ref LimitRegionUsagePolicy, ""]
+      LimitRegionUsageTargets: !Ref uLimitRegionUsageTargets
+      # Prevent CloudTrail Disablement
+      AttachPreventCloudTrailDisablement: !Ref tDeployPreventCloudTrailDisablement
+      PreventCloudTrailDisablementPolicyId: !If [CreatePreventCloudTrailDisablement, !Ref PreventCloudTrailDisablementPolicy, ""]
+      PreventCloudTrailDisablementTargets: !Ref uPreventCloudTrailDisablementTargets
+
+Outputs:
+  PreventLeaveOrganizationPolicyId:
+    Description: ID of the Prevent Leave Organization SCP
+    Value: !If [CreatePreventLeaveOrganization, !Ref PreventLeaveOrganizationPolicy, "Not Deployed"]
+  
+  PreventPublicS3PolicyId:
+    Description: ID of the Prevent Public S3 SCP
+    Value: !If [CreatePreventPublicS3, !Ref PreventPublicS3Policy, "Not Deployed"]
+  
+  DenyPublicResourcesPolicyId:
+    Description: ID of the Deny Public Resources SCP
+    Value: !If [CreateDenyPublicResources, !Ref DenyPublicResourcesPolicy, "Not Deployed"]
+  
+  DenyUserCreationWithoutSSOPolicyId:
+    Description: ID of the Deny User Creation Without SSO SCP
+    Value: !If [CreateDenyUserCreationWithoutSSO, !Ref DenyUserCreationWithoutSSOPolicy, "Not Deployed"]
+  
+  DenyVPCWithoutIPAMPolicyId:
+    Description: ID of the Deny VPC Without IPAM SCP
+    Value: !If [CreateDenyVPCWithoutIPAM, !Ref DenyVPCWithoutIPAMPolicy, "Not Deployed"]
+  
+  LimitRegionUsagePolicyId:
+    Description: ID of the Limit Region Usage SCP
+    Value: !If [CreateLimitRegionUsage, !Ref LimitRegionUsagePolicy, "Not Deployed"]
+  
+  PreventCloudTrailDisablementPolicyId:
+    Description: ID of the Prevent CloudTrail Disablement SCP
+    Value: !If [CreatePreventCloudTrailDisablement, !Ref PreventCloudTrailDisablementPolicy, "Not Deployed"]

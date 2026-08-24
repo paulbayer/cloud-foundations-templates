@@ -1,0 +1,547 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Transit Gateway with Egress VPC for Network Account - Provides centralized internet egress without deep packet inspection"
+
+Metadata:
+  Purpose: "Centralized egress architecture without Network Firewall inspection"
+  UseCase: "Use this template when you need centralized internet egress but do not require deep packet inspection"
+  Architecture: "Spoke VPCs → TGW → Egress VPC (TGW Subnets) → NAT Gateways → Internet"
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Deployment Controls"
+        Parameters:
+          - tDeployTransitGateway
+          - tDeployEgressVpc
+      - Label:
+          default: "Transit Gateway Configuration"
+        Parameters:
+          - tTransitGatewayASN
+          - tAutoAcceptSharedAttachments
+      - Label:
+          default: "IPAM Configuration"
+        Parameters:
+          - tDeployIPAM
+          - tIPAMNetmaskLength
+      - Label:
+          default: "Explicit CIDR Configuration"
+        Parameters:
+          - uEgressVpcCidr
+      - Label:
+          default: "Logging Configuration"
+        Parameters:
+          - uVPCFlowLogsBucketName
+
+Parameters:
+  # Deployment Controls
+  tDeployTransitGateway:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Transit Gateway (template-controlled)"
+
+  tDeployEgressVpc:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of Egress VPC (template-controlled)"
+
+  # TGW Configuration
+  tTransitGatewayASN:
+    Type: Number
+    Default: 65000
+    MinValue: 64512
+    MaxValue: 65534
+    Description: "BGP ASN for the Transit Gateway (template-controlled)"
+
+  tAutoAcceptSharedAttachments:
+    Type: String
+    Default: "enable"
+    AllowedValues: ["enable", "disable"]
+    Description: "Auto-accept shared attachments for Transit Gateway (template-controlled)"
+
+  # IPAM Configuration
+  tDeployIPAM:
+    Type: String
+    Description: "Whether to use IPAM for CIDR allocation (template-controlled)"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  tIPAMNetmaskLength:
+    Type: Number
+    Description: "Netmask length for IPAM allocation (template-controlled, e.g., 24 for /24)"
+    Default: 24
+    MinValue: 16
+    MaxValue: 28
+
+  # User-Provided Parameters (used when tDeployIPAM is false)
+  uEgressVpcCidr:
+    Type: String
+    Description: "Explicit CIDR block for Egress VPC (user-provided, required when IPAM disabled, e.g., 10.100.1.0/24)"
+    Default: ""
+    AllowedPattern: "^(|([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2})$"
+    ConstraintDescription: "Must be a valid CIDR block (e.g., 10.100.1.0/24) or empty when IPAM is enabled"
+
+  # Cross-Account Integration
+  uVPCFlowLogsBucketName:
+    Type: String
+    Description: "S3 bucket name for VPC flow logs from Log Archive account (user-provided)"
+    Default: ""
+
+  # Honors the user's vpcFlowLogs.enabled choice. When false, no VPC flow log is
+  # created even if a bucket exists (e.g. deployed for Network Firewall logging).
+  tEnableVpcFlowLogs:
+    Type: String
+    Description: "Create the VPC flow log for this VPC"
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  CreateTransitGateway: !Equals [!Ref tDeployTransitGateway, "true"]
+  CreateEgressVPC: !Equals [!Ref tDeployEgressVpc, "true"]
+  CreateTransitGatewayAndEgressVpc: !And
+    - !Condition CreateTransitGateway
+    - !Condition CreateEgressVPC
+  UseIPAM: !Equals [!Ref tDeployIPAM, "true"]
+  UseExplicitCidr: !Equals [!Ref tDeployIPAM, "false"]
+  HasExplicitCidr: !Not [!Equals [!Ref uEgressVpcCidr, ""]]
+  HasFlowLogsBucket: !Not [!Equals [!Ref uVPCFlowLogsBucketName, ""]]
+  EnableVpcFlowLogs: !Equals [!Ref tEnableVpcFlowLogs, "true"]
+  CreateVpcFlowLogs: !And
+    - !Condition EnableVpcFlowLogs
+    - !Condition HasFlowLogsBucket
+    - !Condition CreateEgressVPC
+
+Rules:
+  ValidateCidrWhenIPAMDisabled:
+    RuleCondition: !And
+      - !Equals [!Ref tDeployIPAM, "false"]
+      - !Equals [!Ref tDeployEgressVpc, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref uEgressVpcCidr, ""]]
+        AssertDescription: "uEgressVpcCidr must be provided when IPAM is disabled (tDeployIPAM=false) and Egress VPC is enabled"
+
+Resources:
+  # Transit Gateway
+  AWSTransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Condition: CreateTransitGateway
+    Properties:
+      AmazonSideAsn: !Ref tTransitGatewayASN
+      Description: "Transit Gateway for Landing Zone network architecture - Centralized egress without inspection"
+      AutoAcceptSharedAttachments: !Ref tAutoAcceptSharedAttachments
+      DefaultRouteTableAssociation: "disable"
+      DefaultRouteTablePropagation: "enable"
+      DnsSupport: "enable"
+      VpnEcmpSupport: "enable"
+      Tags:
+        - Key: Name
+          Value: !Sub "tgw-${AWS::Region}-landing-zone-001"
+        - Key: Purpose
+          Value: "LandingZoneNetworking"
+        - Key: Architecture
+          Value: "CentralizedEgress"
+
+  # TGW Route Table for Egress Traffic
+  TgwRouteTableToEgress:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Condition: CreateTransitGateway
+    Properties:
+      TransitGatewayId: !Ref AWSTransitGateway
+      Tags:
+        - Key: Name
+          Value: "ToEgress"
+        - Key: Purpose
+          Value: "EgressTraffic"
+
+  # Egress VPC with conditional IPAM or explicit CIDR
+  EgressVpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateEgressVPC
+    Properties:
+      # When using explicit CIDR, set CidrBlock
+      # When using IPAM, set Ipv4IpamPoolId and Ipv4NetmaskLength directly on VPC
+      CidrBlock: !If [UseExplicitCidr, !Ref uEgressVpcCidr, !Ref "AWS::NoValue"]
+      Ipv4IpamPoolId: !If [UseIPAM, !Sub "{{resolve:ssm:/network/ipam/regional-pools/${AWS::Region}}}", !Ref "AWS::NoValue"]
+      Ipv4NetmaskLength: !If [UseIPAM, !Ref tIPAMNetmaskLength, !Ref "AWS::NoValue"]
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "vpc-${AWS::Region}-egress-001"
+        - Key: Purpose
+          Value: "CentralizedEgress"
+
+  # VPC Flow Logs (conditional on bucket availability and VPC creation)
+  VpcFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Condition: CreateVpcFlowLogs
+    Properties:
+      LogDestination: !Sub "arn:aws:s3:::${uVPCFlowLogsBucketName}/egress/"
+      LogDestinationType: s3
+      ResourceId: !Ref EgressVpc
+      ResourceType: VPC
+      TrafficType: ALL
+      Tags:
+        - Key: Name
+          Value: "EgressVPC-FlowLogs"
+
+  # TGW Attachment Subnets (Private)
+  TgwSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [0, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: "TGW Attachment Subnet AZ 1"
+        - Key: Type
+          Value: "Private"
+
+  TgwSubnetAz2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [1, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: "TGW Attachment Subnet AZ 2"
+        - Key: Type
+          Value: "Private"
+
+  # NAT Gateway Subnets (Public)
+  NatSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Select [2, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: "NAT Gateway Public Subnet AZ 1"
+        - Key: Type
+          Value: "Public"
+
+  NatSubnetAz2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Select [3, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: "NAT Gateway Public Subnet AZ 2"
+        - Key: Type
+          Value: "Public"
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateEgressVPC
+    Properties:
+      Tags:
+        - Key: Name
+          Value: "EgressVPC-IGW"
+
+  IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Elastic IPs for NAT Gateways
+  NatGwElasticIp1:
+    Type: AWS::EC2::EIP
+    Condition: CreateEgressVPC
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: "NAT-Gateway-EIP-AZ1"
+
+  NatGwElasticIp2:
+    Type: AWS::EC2::EIP
+    Condition: CreateEgressVPC
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: "NAT-Gateway-EIP-AZ2"
+
+  # NAT Gateways
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Condition: CreateEgressVPC
+    DependsOn: IgwAttachment
+    Properties:
+      AllocationId: !GetAtt NatGwElasticIp1.AllocationId
+      SubnetId: !Ref NatSubnetAz1
+      Tags:
+        - Key: Name
+          Value: "NAT-Gateway-AZ1"
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Condition: CreateEgressVPC
+    DependsOn: IgwAttachment
+    Properties:
+      AllocationId: !GetAtt NatGwElasticIp2.AllocationId
+      SubnetId: !Ref NatSubnetAz2
+      Tags:
+        - Key: Name
+          Value: "NAT-Gateway-AZ2"
+
+  # TGW Attachment (only created when both TGW and Egress VPC are deployed)
+  TGWAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Condition: CreateTransitGatewayAndEgressVpc
+    Properties:
+      SubnetIds:
+        - !Ref TgwSubnetAz1
+        - !Ref TgwSubnetAz2
+      TransitGatewayId: !Ref AWSTransitGateway
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: "Egress VPC Attachment"
+
+  # Route Tables and Routes
+  # TGW Subnet AZ1 Route Table: Routes to NAT Gateway 1
+  TgwSubnetAz1RouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: "TGW Subnet AZ1 Route Table"
+
+  TgwSubnetAz1DefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateEgressVPC
+    DependsOn: NatGateway1
+    Properties:
+      RouteTableId: !Ref TgwSubnetAz1RouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref NatGateway1
+
+  TgwSubnetAz1RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateEgressVPC
+    Properties:
+      SubnetId: !Ref TgwSubnetAz1
+      RouteTableId: !Ref TgwSubnetAz1RouteTable
+
+  # TGW Subnet AZ2 Route Table: Routes to NAT Gateway 2
+  TgwSubnetAz2RouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: "TGW Subnet AZ2 Route Table"
+
+  TgwSubnetAz2DefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateEgressVPC
+    DependsOn: NatGateway2
+    Properties:
+      RouteTableId: !Ref TgwSubnetAz2RouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref NatGateway2
+
+  TgwSubnetAz2RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateEgressVPC
+    Properties:
+      SubnetId: !Ref TgwSubnetAz2
+      RouteTableId: !Ref TgwSubnetAz2RouteTable
+
+  # NAT Gateway Subnet AZ1 Route Table: Routes to Internet Gateway
+  NatSubnetAz1RouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: "NAT Subnet AZ1 Route Table"
+
+  NatSubnetAz1DefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateEgressVPC
+    DependsOn: IgwAttachment
+    Properties:
+      RouteTableId: !Ref NatSubnetAz1RouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  NatSubnetAz1RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateEgressVPC
+    Properties:
+      SubnetId: !Ref NatSubnetAz1
+      RouteTableId: !Ref NatSubnetAz1RouteTable
+
+  # NAT Gateway Subnet AZ2 Route Table: Routes to Internet Gateway
+  NatSubnetAz2RouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateEgressVPC
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: "NAT Subnet AZ2 Route Table"
+
+  NatSubnetAz2DefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateEgressVPC
+    DependsOn: IgwAttachment
+    Properties:
+      RouteTableId: !Ref NatSubnetAz2RouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  NatSubnetAz2RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateEgressVPC
+    Properties:
+      SubnetId: !Ref NatSubnetAz2
+      RouteTableId: !Ref NatSubnetAz2RouteTable
+
+  # SSM Parameters for cross-stack references
+  TransitGatewayIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateTransitGateway
+    Properties:
+      Name: "/network/transit-gateway/id"
+      Type: String
+      Value: !Ref AWSTransitGateway
+      Description: "Transit Gateway ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  EgressVPCIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateEgressVPC
+    Properties:
+      Name: "/network/egress-vpc/id"
+      Type: String
+      Value: !Ref EgressVpc
+      Description: "Egress VPC ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  EgressVPCCidrSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateEgressVPC
+    Properties:
+      Name: "/network/egress-vpc/cidr"
+      Type: String
+      Value: !GetAtt EgressVpc.CidrBlock
+      Description: "Egress VPC CIDR block"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  TGWAttachmentIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateTransitGatewayAndEgressVpc
+    Properties:
+      Name: "/network/tgw-egress-attachment/id"
+      Type: String
+      Value: !Ref TGWAttachment
+      Description: "TGW Egress VPC Attachment ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  TgwRouteTableToEgressIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateTransitGateway
+    Properties:
+      Name: "/network/tgw-route-table-to-egress/id"
+      Type: String
+      Value: !Ref TgwRouteTableToEgress
+      Description: "TGW Route Table for Egress Traffic"
+      Tags:
+        Purpose: "CrossStackReference"
+
+Outputs:
+  TransitGatewayId:
+    Condition: CreateTransitGateway
+    Description: "Transit Gateway ID"
+    Value: !Ref AWSTransitGateway
+    Export:
+      Name: !Sub "${AWS::StackName}-TransitGateway-ID"
+
+  EgressVPCId:
+    Condition: CreateEgressVPC
+    Description: "Egress VPC ID"
+    Value: !Ref EgressVpc
+    Export:
+      Name: !Sub "${AWS::StackName}-EgressVPC-ID"
+
+  EgressVPCCidr:
+    Condition: CreateEgressVPC
+    Description: "Egress VPC CIDR block"
+    Value: !GetAtt EgressVpc.CidrBlock
+    Export:
+      Name: !Sub "${AWS::StackName}-EgressVPC-CIDR"
+
+  TGWAttachmentId:
+    Condition: CreateTransitGatewayAndEgressVpc
+    Description: "TGW Egress VPC Attachment ID"
+    Value: !Ref TGWAttachment
+    Export:
+      Name: !Sub "${AWS::StackName}-TGWAttachment-ID"
+
+  TgwRouteTableToEgressId:
+    Condition: CreateTransitGateway
+    Description: "TGW Route Table for Egress Traffic"
+    Value: !Ref TgwRouteTableToEgress
+    Export:
+      Name: !Sub "${AWS::StackName}-TgwRouteTableToEgress-ID"
+
+  NatGateway1Id:
+    Condition: CreateEgressVPC
+    Description: "NAT Gateway 1 ID (AZ1)"
+    Value: !Ref NatGateway1
+    Export:
+      Name: !Sub "${AWS::StackName}-NatGateway1-ID"
+
+  NatGateway2Id:
+    Condition: CreateEgressVPC
+    Description: "NAT Gateway 2 ID (AZ2)"
+    Value: !Ref NatGateway2
+    Export:
+      Name: !Sub "${AWS::StackName}-NatGateway2-ID"
+
+  InternetGatewayId:
+    Condition: CreateEgressVPC
+    Description: "Internet Gateway ID"
+    Value: !Ref InternetGateway
+    Export:
+      Name: !Sub "${AWS::StackName}-InternetGateway-ID"
+
+  AllocationMethod:
+    Condition: CreateEgressVPC
+    Description: "CIDR allocation method used (IPAM or Explicit)"
+    Value: !If [UseIPAM, "IPAM", "Explicit"]
+    Export:
+      Name: !Sub "${AWS::StackName}-AllocationMethod"
+
+  Architecture:
+    Description: "Network architecture type"
+    Value: "CentralizedEgressWithoutInspection"
+    Export:
+      Name: !Sub "${AWS::StackName}-Architecture"

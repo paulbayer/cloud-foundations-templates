@@ -1,0 +1,363 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Endpoint VPC with conditional IPAM or explicit CIDR allocation - Provides centralized VPC endpoints for AWS services"
+
+Parameters:
+  # Deployment Controls
+  tDeployIPAM:
+    Type: String
+    Description: "Whether to use IPAM for CIDR allocation (template-controlled)"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  # IPAM Parameters (used when tDeployIPAM is true)
+  tIPAMNetmaskLength:
+    Type: Number
+    Description: "Netmask length for IPAM allocation (template-controlled, e.g., 24 for /24)"
+    Default: 24
+    MinValue: 16
+    MaxValue: 28
+
+  # User-Provided Parameters (used when tDeployIPAM is false)
+  uEndpointVpcCidr:
+    Type: String
+    Description: "Explicit CIDR block for Endpoint VPC (user-provided, required when IPAM disabled, e.g., 10.100.0.0/24)"
+    Default: ""
+    AllowedPattern: "^(|([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2})$"
+    ConstraintDescription: "Must be a valid CIDR block (e.g., 10.100.0.0/24) or empty when IPAM is enabled"
+
+  # VPC Configuration
+  tCentralEndpoints:
+    Type: String
+    Description: "Enable centralized VPC endpoints for AWS services (template-controlled)"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  tAvailabilityZones:
+    Type: Number
+    Description: "Number of Availability Zones to use (template-controlled)"
+    Default: 2
+    MinValue: 2
+    MaxValue: 3
+
+  # Cross-Account Integration
+  uVPCFlowLogsBucketName:
+    Type: String
+    Description: "S3 bucket name for VPC flow logs from Log Archive account (user-provided)"
+    Default: ""
+
+  # Honors the user's vpcFlowLogs.enabled choice (#107): when false, no VPC flow
+  # log is created even if a bucket exists.
+  tEnableVpcFlowLogs:
+    Type: String
+    Description: "Create the VPC flow log for this VPC"
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "IPAM Configuration"
+        Parameters:
+          - tDeployIPAM
+          - tIPAMNetmaskLength
+      - Label:
+          default: "Explicit CIDR Configuration"
+        Parameters:
+          - uEndpointVpcCidr
+      - Label:
+          default: "VPC Configuration"
+        Parameters:
+          - tCentralEndpoints
+          - tAvailabilityZones
+      - Label:
+          default: "Logging Configuration"
+        Parameters:
+          - uVPCFlowLogsBucketName
+
+Conditions:
+  UseIPAM: !Equals [!Ref tDeployIPAM, "true"]
+  UseExplicitCidr: !Equals [!Ref tDeployIPAM, "false"]
+  HasExplicitCidr: !Not [!Equals [!Ref uEndpointVpcCidr, ""]]
+  EnableCentralEndpoints: !Equals [!Ref tCentralEndpoints, "true"]
+  HasFlowLogsBucket: !Not [!Equals [!Ref uVPCFlowLogsBucketName, ""]]
+  EnableVpcFlowLogs: !Equals [!Ref tEnableVpcFlowLogs, "true"]
+  CreateVpcFlowLogs: !And
+    - !Condition EnableVpcFlowLogs
+    - !Condition HasFlowLogsBucket
+  Use3AZs: !Equals [!Ref tAvailabilityZones, 3]
+
+Rules:
+  ValidateCidrWhenIPAMDisabled:
+    RuleCondition: !Equals [!Ref tDeployIPAM, "false"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref uEndpointVpcCidr, ""]]
+        AssertDescription: "uEndpointVpcCidr must be provided when IPAM is disabled (tDeployIPAM=false)"
+
+Resources:
+  # Endpoint VPC
+  EndpointVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      # When IPAM enabled: use IPAM pool for CIDR allocation directly on VPC
+      # When IPAM disabled: use explicit CIDR block
+      CidrBlock: !If 
+        - UseExplicitCidr
+        - !Ref uEndpointVpcCidr
+        - !Ref "AWS::NoValue"
+      Ipv4IpamPoolId: !If
+        - UseIPAM
+        - !Sub "{{resolve:ssm:/network/ipam/regional-pools/${AWS::Region}}}"
+        - !Ref "AWS::NoValue"
+      Ipv4NetmaskLength: !If
+        - UseIPAM
+        - !Ref tIPAMNetmaskLength
+        - !Ref "AWS::NoValue"
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "vpc-${AWS::Region}-endpoint-001"
+        - Key: Purpose
+          Value: "CentralizedEndpoints"
+
+  # VPC Flow Logs (conditional on bucket availability)
+  VpcFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Condition: CreateVpcFlowLogs
+    Properties:
+      LogDestination: !Sub "arn:aws:s3:::${uVPCFlowLogsBucketName}/endpoint/"
+      LogDestinationType: s3
+      ResourceId: !Ref EndpointVpc
+      ResourceType: VPC
+      TrafficType: ALL
+      Tags:
+        - Key: Name
+          Value: "EndpointVPC-FlowLogs"
+
+  # Endpoint Subnets (Private)
+  EndpointSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EndpointVpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [0, !Cidr [!GetAtt EndpointVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: "Endpoint Subnet AZ 1"
+        - Key: Type
+          Value: "Private"
+
+  EndpointSubnetAz2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EndpointVpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [1, !Cidr [!GetAtt EndpointVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: "Endpoint Subnet AZ 2"
+        - Key: Type
+          Value: "Private"
+
+  EndpointSubnetAz3:
+    Type: AWS::EC2::Subnet
+    Condition: Use3AZs
+    Properties:
+      VpcId: !Ref EndpointVpc
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      CidrBlock: !Select [2, !Cidr [!GetAtt EndpointVpc.CidrBlock, 6, 5]]
+      Tags:
+        - Key: Name
+          Value: "Endpoint Subnet AZ 3"
+        - Key: Type
+          Value: "Private"
+
+  # Route Table for Endpoint Subnets
+  EndpointRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EndpointVpc
+      Tags:
+        - Key: Name
+          Value: "Endpoint Subnets Route Table"
+
+  EndpointSubnetAz1RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetAz1
+      RouteTableId: !Ref EndpointRouteTable
+
+  EndpointSubnetAz2RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetAz2
+      RouteTableId: !Ref EndpointRouteTable
+
+  EndpointSubnetAz3RtAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: Use3AZs
+    Properties:
+      SubnetId: !Ref EndpointSubnetAz3
+      RouteTableId: !Ref EndpointRouteTable
+
+  # Security Group for VPC Endpoints
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: EnableCentralEndpoints
+    Properties:
+      GroupDescription: "Security group for VPC endpoints"
+      VpcId: !Ref EndpointVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !GetAtt EndpointVpc.CidrBlock
+          Description: "Allow HTTPS from VPC"
+      Tags:
+        - Key: Name
+          Value: "Endpoint-SecurityGroup"
+
+  # S3 Gateway endpoint. Required whenever the S3 *interface* endpoint enables
+  # private DNS: AWS rejects PrivateDnsEnabled/PrivateDnsOnlyForInboundResolverEndpoint
+  # on an S3 interface endpoint unless the VPC also has an S3 gateway endpoint
+  # (issue #88). It is VPC-local (route-table based); in this centralized Endpoint
+  # VPC it has no local S3 consumers and exists to satisfy that requirement so the
+  # interface endpoint can serve S3 private DNS to spokes over the resolver.
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: EnableCentralEndpoints
+    Properties:
+      VpcEndpointType: Gateway
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcId: !Ref EndpointVpc
+      RouteTableIds:
+        - !Ref EndpointRouteTable
+
+  # VPC Endpoints (Interface Endpoints)
+  S3InterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: EnableCentralEndpoints
+    # PrivateDnsOnlyForInboundResolverEndpoint scopes the interface endpoint's
+    # private DNS to queries arriving via an inbound Route53 Resolver endpoint (the
+    # hybrid DNS path used by spokes), so the Endpoint VPC's own S3 traffic keeps
+    # using the gateway endpoint above — the pattern AWS requires for an S3
+    # interface endpoint with private DNS (issue #88).
+    #
+    # This property is a STRING enum in CloudFormation
+    # (OnlyInboundResolver | AllResolvers | NotSpecified), NOT a boolean. obs-088
+    # set it to boolean `true`, which CloudFormation rejects with an enum
+    # validation error, so the S3 interface endpoint could not be created (#93).
+    DependsOn: S3GatewayEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcId: !Ref EndpointVpc
+      SubnetIds:
+        - !Ref EndpointSubnetAz1
+        - !Ref EndpointSubnetAz2
+        - !If [Use3AZs, !Ref EndpointSubnetAz3, !Ref "AWS::NoValue"]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+      DnsOptions:
+        PrivateDnsOnlyForInboundResolverEndpoint: OnlyInboundResolver
+
+  EC2InterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: EnableCentralEndpoints
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2"
+      VpcId: !Ref EndpointVpc
+      SubnetIds:
+        - !Ref EndpointSubnetAz1
+        - !Ref EndpointSubnetAz2
+        - !If [Use3AZs, !Ref EndpointSubnetAz3, !Ref "AWS::NoValue"]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  SSMInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: EnableCentralEndpoints
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcId: !Ref EndpointVpc
+      SubnetIds:
+        - !Ref EndpointSubnetAz1
+        - !Ref EndpointSubnetAz2
+        - !If [Use3AZs, !Ref EndpointSubnetAz3, !Ref "AWS::NoValue"]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # SSM Parameters for cross-stack references
+  EndpointVPCIdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/network/endpoint-vpc/id"
+      Type: String
+      Value: !Ref EndpointVpc
+      Description: "Endpoint VPC ID"
+      Tags:
+        Purpose: "CrossStackReference"
+
+  EndpointVPCCidrSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/network/endpoint-vpc/cidr"
+      Type: String
+      Value: !GetAtt EndpointVpc.CidrBlock
+      Description: "Endpoint VPC CIDR block"
+      Tags:
+        Purpose: "CrossStackReference"
+
+Outputs:
+  VpcId:
+    Description: "Endpoint VPC ID"
+    Value: !Ref EndpointVpc
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+
+  VpcCidr:
+    Description: "Endpoint VPC CIDR block"
+    Value: !GetAtt EndpointVpc.CidrBlock
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcCidr"
+
+  EndpointSubnetAz1Id:
+    Description: "Endpoint Subnet AZ 1 ID"
+    Value: !Ref EndpointSubnetAz1
+    Export:
+      Name: !Sub "${AWS::StackName}-EndpointSubnetAz1-ID"
+
+  EndpointSubnetAz2Id:
+    Description: "Endpoint Subnet AZ 2 ID"
+    Value: !Ref EndpointSubnetAz2
+    Export:
+      Name: !Sub "${AWS::StackName}-EndpointSubnetAz2-ID"
+
+  EndpointSubnetAz3Id:
+    Condition: Use3AZs
+    Description: "Endpoint Subnet AZ 3 ID"
+    Value: !Ref EndpointSubnetAz3
+    Export:
+      Name: !Sub "${AWS::StackName}-EndpointSubnetAz3-ID"
+
+  EndpointSecurityGroupId:
+    Condition: EnableCentralEndpoints
+    Description: "Security Group ID for VPC Endpoints"
+    Value: !Ref EndpointSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-EndpointSecurityGroup-ID"
+
+  AllocationMethod:
+    Description: "CIDR allocation method used (IPAM or Explicit)"
+    Value: !If [UseIPAM, "IPAM", "Explicit"]
+    Export:
+      Name: !Sub "${AWS::StackName}-AllocationMethod"

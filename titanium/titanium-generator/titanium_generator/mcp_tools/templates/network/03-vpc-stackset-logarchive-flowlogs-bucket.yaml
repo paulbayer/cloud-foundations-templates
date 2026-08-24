@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'VPC Flow Logs S3 Bucket for Log Archive Account - Creates S3 bucket with proper policies for collecting VPC Flow logs'
+
+Parameters:
+  # Deployment Control
+  tDeployVPCFlowLogsBucket:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Enable deployment of VPC Flow Logs S3 bucket (template-controlled)"
+
+  # Account Targeting
+  uOrganizationId:
+    Type: String
+    Description: "ID of the AWS Organization of the Landing Zone (user-provided, format: o-xxxxxxxxx)"
+    AllowedPattern: "^o-[a-z0-9]{10,32}$"
+    ConstraintDescription: "Must be a valid AWS Organization ID (format: o-xxxxxxxxxx)"
+
+  # S3 Configuration
+  tBucketRetentionDays:
+    Type: Number
+    Default: 365
+    MinValue: 30
+    MaxValue: 3650
+    Description: "Number of days to retain VPC flow logs in S3 bucket (template-controlled)"
+
+Conditions:
+  CreateVPCFlowLogsBucket: !Equals [!Ref tDeployVPCFlowLogsBucket, "true"]
+
+Resources:
+  # Main VPC Flow Logs Bucket
+  VPCFlowLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateVPCFlowLogsBucket
+    # Retain on stack/StackSet delete. The bucket is versioned and holds VPC
+    # flow-log audit data; CloudFormation cannot delete a non-empty versioned
+    # bucket, which previously drove the StackSet instance INOPERABLE (issue
+    # #108). Retaining it both unblocks teardown AND preserves audit logs the
+    # customer may still need. The bucket is intentionally NOT auto-emptied so
+    # log data is never destroyed on teardown; purge/delete it manually when it
+    # is genuinely no longer needed (see the teardown guide). Note: the bucket
+    # name is deterministic, so a later re-deploy in the same account/region
+    # must reuse or first delete the retained bucket.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "titanium-vpc-flow-logs-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: FlowLogsRetentionRule
+            Status: Enabled
+            ExpirationInDays: !Ref tBucketRetentionDays
+            NoncurrentVersionExpirationInDays: !Ref tBucketRetentionDays
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: Name
+          Value: !Sub "vpc-flow-logs-${AWS::AccountId}-${AWS::Region}"
+        - Key: Purpose
+          Value: "VPCFlowLogs"
+
+  # Bucket Policy for VPC Flow Logs
+  VPCFlowLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateVPCFlowLogsBucket
+    DependsOn: VPCFlowLogsBucket
+    Properties:
+      Bucket: !Ref VPCFlowLogsBucket
+      PolicyDocument:
+        Id: S3BucketPolicy
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowOrganizationWrite
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${VPCFlowLogsBucket}/*"
+            Condition:
+              StringEquals:
+                "aws:PrincipalOrgID": !Ref uOrganizationId
+          - Sid: AWSLogDeliveryWrite
+            Effect: Allow
+            Principal:
+              Service: "delivery.logs.amazonaws.com"
+            Action:
+              - "s3:PutObject"
+            Resource: !Sub "arn:aws:s3:::${VPCFlowLogsBucket}/*"
+            Condition:
+              StringEquals:
+                "s3:x-amz-acl": "bucket-owner-full-control"
+          - Sid: AWSLogDeliveryAclCheck
+            Effect: Allow
+            Principal:
+              Service: "delivery.logs.amazonaws.com"
+            Action:
+              - "s3:GetBucketAcl"
+            Resource: !Sub "arn:aws:s3:::${VPCFlowLogsBucket}"
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${VPCFlowLogsBucket}/*"
+              - !Sub "arn:aws:s3:::${VPCFlowLogsBucket}"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+Outputs:
+  VPCFlowLogsBucketName:
+    Condition: CreateVPCFlowLogsBucket
+    Description: "VPC Flow Logs S3 bucket name"
+    Value: !Ref VPCFlowLogsBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCFlowLogsBucketName"
+
+  VPCFlowLogsBucketArn:
+    Condition: CreateVPCFlowLogsBucket
+    Description: "VPC Flow Logs S3 bucket ARN"
+    Value: !GetAtt VPCFlowLogsBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCFlowLogsBucketArn"
+
+  SSEAlgorithmUsed:
+    Condition: CreateVPCFlowLogsBucket
+    Description: "Server-side encryption algorithm used"
+    Value: "AES256"
+    Export:
+      Name: !Sub "${AWS::StackName}-SSEAlgorithm"
